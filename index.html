@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Virtual Office｜誰かが今、作業している</title>
+<style>
+  :root{
+    --bg:#16181d; --panel:#1f232b; --panel2:#272c36; --line:#343a46;
+    --text:#e6e8ec; --sub:#9aa3b2; --accent:#7fb8a4; --warn:#e07a6a; --star:#e6c06a;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:"Hiragino Sans","Noto Sans JP",system-ui,sans-serif;font-size:14px;line-height:1.6}
+  header{display:flex;align-items:center;gap:16px;padding:16px 24px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  header h1{font-size:17px;margin:0;font-weight:600;letter-spacing:.02em}
+  header .live{display:inline-flex;align-items:center;gap:6px;color:var(--sub);font-size:13px}
+  header .dot{width:8px;height:8px;border-radius:50%;background:#555}
+  header .dot.on{background:#e05555;box-shadow:0 0 8px #e05555}
+  .spacer{flex:1}
+  main{max-width:1180px;margin:0 auto;padding:20px 24px 60px}
+  button{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 12px;cursor:pointer}
+  button:hover{border-color:#566}
+  button.primary{background:var(--accent);color:#102019;border-color:var(--accent);font-weight:600;padding:10px 22px;font-size:15px}
+  button.warn{border-color:#6b3f39;color:#f2b2a8}
+  button.on{background:#3a4d47;border-color:var(--accent)}
+  input[type=text],input[type=number],textarea{font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
+  input[type=range]{accent-color:var(--accent);width:100%}
+  .start{display:flex;flex-direction:column;align-items:center;gap:10px;padding:40px 0;color:var(--sub)}
+  .slots{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:16px}
+  .slot{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:8px}
+  .slot .head{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--sub)}
+  .slot .badge{background:var(--panel2);border-radius:4px;padding:1px 6px;font-size:11px}
+  .slot .badge.fav{color:var(--star)}
+  .slot .player{width:356px;height:200px;max-width:100%;background:#000;border-radius:6px;overflow:hidden;align-self:center}
+  .slot .title{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .slot .ch{font-size:12px;color:var(--sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .slot .row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .slot .vol{white-space:nowrap;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--sub)}
+  .slot .vol span{min-width:34px;text-align:right}
+  .slot .progress{height:3px;background:var(--panel2);border-radius:2px;overflow:hidden}
+  .slot .progress div{height:100%;background:var(--star);width:0}
+  .slot .empty{width:356px;max-width:100%;height:200px;display:flex;align-items:center;justify-content:center;color:var(--sub);background:var(--panel2);border-radius:6px;text-align:center;padding:12px;align-self:center}
+  section.box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-top:16px}
+  section.box h2{font-size:14px;margin:0 0 10px;font-weight:600}
+  .amb{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px 24px}
+  .amb label{display:flex;flex-direction:column;font-size:12px;color:var(--sub)}
+  details{margin-top:16px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 16px}
+  details summary{cursor:pointer;font-weight:600}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;margin-top:10px}
+  .list{max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px}
+  .list div{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 8px;border-bottom:1px solid var(--line);font-size:12px}
+  .list div:last-child{border-bottom:none}
+  .list button{padding:0 8px;font-size:11px}
+  .muted{color:var(--sub);font-size:12px}
+  code{background:var(--bg);padding:1px 5px;border-radius:4px;font-size:12px}
+  ol{padding-left:20px;margin:6px 0}
+  #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#2f3a37;border:1px solid var(--accent);padding:8px 16px;border-radius:8px;opacity:0;transition:opacity .3s;pointer-events:none;max-width:90vw}
+  #toast.show{opacity:1}
+  .kbd{display:inline-block;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 5px;font-size:11px;margin:0 2px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Virtual Office</h1>
+  <span class="live"><span class="dot" id="liveDot"></span><span id="liveText">停止中</span></span>
+  <span class="spacer"></span>
+  <span class="muted">音楽・雨が聞こえたら <span class="kbd">1</span><span class="kbd">2</span><span class="kbd">3</span>（その枠を除外）</span>
+</header>
+
+<main>
+  <div class="start" id="startArea">
+    <button class="primary" id="startBtn">開始</button>
+    <div id="startNote">ブラウザの仕様で、音を出すには最初に1回クリックが必要です</div>
+  </div>
+
+  <div class="slots" id="slots"></div>
+
+  <section class="box">
+    <h2>合成環境音（YouTubeを使わない軽い背景音）</h2>
+    <div class="amb">
+      <label>空調のゴーッという音<input type="range" min="0" max="100" id="ambHvac"></label>
+      <label>周りのタイピング<input type="range" min="0" max="100" id="ambType"></label>
+      <label>紙・ペンの音<input type="range" min="0" max="100" id="ambPaper"></label>
+    </div>
+    <div class="muted" style="margin-top:6px">ライブの候補が見つからないときは自動で少し上がります。</div>
+  </section>
+
+  <details id="settingsBox">
+    <summary>設定</summary>
+    <div class="grid2">
+      <div>
+        <label class="muted">YouTube Data API キー</label><br>
+        <input type="text" id="apiKey" style="width:100%" placeholder="AIza...">
+        <div class="muted" style="margin-top:8px">
+          音を流す枠の数 <input type="number" id="slotCount" min="1" max="3" style="width:56px">
+          ／ 自動登録まで <input type="number" id="autoFavMin" min="1" max="120" style="width:64px"> 分
+        </div>
+        <div class="muted" style="margin-top:8px">
+          <label><input type="checkbox" id="presence"> 存在枠を追加（BGMつきでもOK、ミュートで画面だけ流す）</label>
+        </div>
+        <div class="muted" style="margin-top:8px">検索ワード（1行に1つ）</div>
+        <textarea id="queries" rows="6" style="width:100%"></textarea>
+        <div class="row" style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
+          <button id="saveSettings">保存して反映</button>
+          <button id="refreshBtn">候補を今すぐ再検索</button>
+        </div>
+        <div class="muted" id="quotaNote" style="margin-top:6px"></div>
+      </div>
+      <div>
+        <div class="muted">URLを直接再生（1枠目に読み込み）</div>
+        <div style="display:flex;gap:6px"><input type="text" id="manualUrl" style="flex:1" placeholder="https://www.youtube.com/watch?v=..."><button id="manualBtn">再生</button></div>
+        <div class="muted" style="margin-top:12px">★ 登録チャンネル</div>
+        <div class="list" id="favList"></div>
+        <div class="muted" style="margin-top:12px">✕ 除外チャンネル</div>
+        <div class="list" id="blockList"></div>
+        <div class="row" style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+          <button id="exportBtn">学習データを書き出し</button>
+          <label class="muted" style="display:inline-flex;align-items:center;gap:4px"><button id="importBtn" type="button">読み込み</button><input type="file" id="importFile" accept=".json" style="display:none"></label>
+          <button class="warn" id="resetLearn">キーワード学習をリセット</button>
+        </div>
+      </div>
+    </div>
+  </details>
+
+  <details>
+    <summary>APIキーの取り方（最初に1回だけ）</summary>
+    <ol>
+      <li><a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener" style="color:var(--accent)">Google Cloud Console</a> で新しいプロジェクトを作る（名前は何でもOK）</li>
+      <li>「APIとサービス」→「ライブラリ」で <b>YouTube Data API v3</b> を検索し「有効にする」</li>
+      <li>「APIとサービス」→「認証情報」→「認証情報を作成」→「APIキー」</li>
+      <li>作成したキーの編集画面で制限をかける
+        <ul>
+          <li>アプリケーションの制限：<b>ウェブサイト</b> → <code id="originHint"></code> を追加</li>
+          <li>APIの制限：<b>YouTube Data API v3</b> のみ</li>
+        </ul>
+      </li>
+      <li>キーを上の「設定」に貼って「保存して反映」</li>
+    </ol>
+    <div class="muted">無料枠は1日10,000ユニット。候補の検索1回で約600〜1,100ユニット使い、結果は30分キャッシュします。</div>
+  </details>
+</main>
+<div id="toast"></div>
+
+<script>
+/* ========== 保存データ ========== */
+const STORE_KEY = 'virtualOffice.v1';
+const DEFAULT_QUERIES = ['作業配信','勉強配信','study with me live','work with me live','作業用 ライブ','勉強 ライブ 一緒に'];
+const defaults = () => ({
+  apiKey:'', slotCount:2, autoFavMin:15, presence:false, queries:DEFAULT_QUERIES.slice(),
+  favorites:{}, blocked:{}, tokenW:{}, listened:{}, volumes:[60,40,30],
+  amb:{hvac:15,type:0,paper:0}, cache:null
+});
+let S = defaults();
+try { const raw = localStorage.getItem(STORE_KEY); if (raw) S = Object.assign(defaults(), JSON.parse(raw)); } catch(e){}
+function save(){ try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch(e){} }
+
+/* ========== スコアリング ========== */
+const BASE_WEIGHTS = [
+  ['bgmなし',4],['bgm無し',4],['no bgm',4],['no music',4],['音楽なし',4],['環境音',2],['作業音',2.5],
+  ['タイピング',1.5],['typing',1.5],['キーボード',1],['keyboard',1],['ペン',1],['writing',1],['real time',1],['realtime',1],['リアルタイム',1],
+  ['lofi',-3],['lo-fi',-3],['lo fi',-3],['music',-1.5],['bgm',-1],['音楽',-1.5],['piano',-2],['ピアノ',-2],['jazz',-2],['ジャズ',-2],
+  ['rain',-2],['雨',-2],['thunder',-2],['chill',-1],['radio',-1.5],['beats',-2],['ambient music',-2],['焚き火',-1],['fireplace',-1]
+];
+function tokenize(text){
+  const t = (text||'').toLowerCase();
+  const out = new Set();
+  (t.match(/[a-z0-9][a-z0-9\-']{1,}/g)||[]).forEach(w=>out.add(w));
+  (t.match(/[぀-ヿ㐀-鿿]+/g)||[]).forEach(seq=>{
+    if (seq.length===1) out.add(seq);
+    for (let i=0;i<seq.length-1;i++) out.add(seq.slice(i,i+2));
+  });
+  return [...out];
+}
+function score(item){
+  const text = (item.title+' '+item.channelTitle+' '+(item.desc||'').slice(0,300)).toLowerCase();
+  let s = 0;
+  for (const [k,w] of BASE_WEIGHTS) if (text.includes(k)) s += w;
+  const toks = tokenize(item.title+' '+item.channelTitle);
+  let learned = 0;
+  for (const tk of toks) learned += (S.tokenW[tk]||0);
+  s += learned / Math.sqrt(Math.max(toks.length,1)) * 2;
+  if (S.favorites[item.channelId]) s += 50;
+  s += Math.log10((item.viewers||0)+1) * 0.4;
+  return s;
+}
+function learn(item, dir){
+  const toks = tokenize(item.title+' '+item.channelTitle);
+  for (const tk of toks){
+    const v = (S.tokenW[tk]||0) + 0.4*dir;
+    S.tokenW[tk] = Math.max(-3, Math.min(3, v));
+  }
+}
+
+/* ========== YouTube Data API ========== */
+const API = 'https://www.googleapis.com/youtube/v3/';
+let quotaUsed = 0;
+async function api(path, params, cost){
+  if (!S.apiKey) throw new Error('APIキーが未設定です（設定から入力してください）');
+  const u = new URL(API+path);
+  Object.entries(Object.assign({key:S.apiKey}, params)).forEach(([k,v])=>u.searchParams.set(k,v));
+  const r = await fetch(u);
+  quotaUsed += cost;
+  const j = await r.json();
+  if (j.error){
+    const reason = (j.error.errors&&j.error.errors[0]&&j.error.errors[0].reason)||'';
+    if (reason==='quotaExceeded') throw new Error('今日のAPI無料枠を使い切りました（日本時間17時ごろリセット）');
+    if (/referer|referrer/i.test(j.error.message)) throw new Error('APIキーのウェブサイト制限にこのページのURLが入っていません');
+    throw new Error('APIエラー: '+j.error.message);
+  }
+  return j;
+}
+async function fetchCandidates(force){
+  const CACHE_MS = 30*60*1000;
+  if (!force && S.cache && Date.now()-S.cache.at < CACHE_MS) return S.cache.items;
+  setStatus('ライブ配信を検索中…');
+  const ids = new Set();
+  // 1) 広く検索
+  for (const q of S.queries.filter(Boolean)){
+    try{
+      const j = await api('search',{part:'snippet',type:'video',eventType:'live',maxResults:50,q},100);
+      j.items.forEach(it=>it.id&&it.id.videoId&&ids.add(it.id.videoId));
+    }catch(e){ if (/無料枠|APIキー|制限/.test(e.message)) throw e; }
+  }
+  // 2) 登録チャンネルの前回の配信IDも確認（24時間配信ならこれで拾える）
+  Object.values(S.favorites).forEach(f=>f.lastVideoId&&ids.add(f.lastVideoId));
+  let items = await details([...ids]);
+  // 3) 登録チャンネルで見つからないものは個別に確認（最大5件）
+  const liveCh = new Set(items.map(i=>i.channelId));
+  const missing = Object.keys(S.favorites).filter(c=>!liveCh.has(c)).slice(0,5);
+  const extra = new Set();
+  for (const c of missing){
+    try{
+      const j = await api('search',{part:'snippet',type:'video',eventType:'live',channelId:c,maxResults:3},100);
+      j.items.forEach(it=>it.id&&it.id.videoId&&extra.add(it.id.videoId));
+    }catch(e){ break; }
+  }
+  if (extra.size) items = items.concat(await details([...extra]));
+  // 登録チャンネルの最新配信IDを更新
+  items.forEach(i=>{ if (S.favorites[i.channelId]) S.favorites[i.channelId].lastVideoId = i.videoId; });
+  S.cache = {at:Date.now(), items};
+  save();
+  document.getElementById('quotaNote').textContent = `この検索で約${quotaUsed}ユニット使用（今日の累計はこのタブを開いてからの分のみ表示）`;
+  return items;
+}
+async function details(ids){
+  const out = [];
+  for (let i=0;i<ids.length;i+=50){
+    const j = await api('videos',{part:'snippet,status,liveStreamingDetails',id:ids.slice(i,i+50).join(','),maxResults:50},1);
+    j.items.forEach(v=>{
+      if (v.snippet.liveBroadcastContent!=='live') return;
+      if (v.status && v.status.embeddable===false) return;
+      out.push({videoId:v.id, channelId:v.snippet.channelId, channelTitle:v.snippet.channelTitle,
+        title:v.snippet.title, desc:v.snippet.description||'',
+        viewers:+((v.liveStreamingDetails||{}).concurrentViewers||0)});
+    });
+  }
+  return out;
+}
+
+/* ========== プレーヤー枠 ========== */
+let ytReady = false, started = false;
+const slots = []; // {kind:'sound'|'presence', player, item, el, solo, listenedSec}
+const sessionBad = new Set();   // 埋め込み不可などで再生できなかった動画
+const sessionSkip = new Set();  // 「次へ」で飛ばした動画
+let soloIdx = -1;
+
+window.onYouTubeIframeAPIReady = ()=>{ ytReady = true; };
+(function(){ const s=document.createElement('script'); s.src='https://www.youtube.com/iframe_api'; document.head.appendChild(s); })();
+
+function buildSlots(){
+  const wrap = document.getElementById('slots');
+  slots.forEach(s=>{ try{ s.player&&s.player.destroy(); }catch(e){} });
+  slots.length = 0; wrap.innerHTML='';
+  const n = Math.max(1,Math.min(3,+S.slotCount||2));
+  for (let i=0;i<n;i++) slots.push(makeSlot('sound',i));
+  if (S.presence) slots.push(makeSlot('presence',slots.length));
+  slots.forEach(s=>wrap.appendChild(s.el));
+}
+function makeSlot(kind, idx){
+  const el = document.createElement('div');
+  el.className='slot';
+  const isP = kind==='presence';
+  el.innerHTML = `
+    <div class="head"><span class="badge">${isP?'存在枠（ミュート）':'音 '+(idx+1)}</span><span class="badge fav" data-r="fav" hidden>★ 登録済み</span><span class="spacer"></span><span data-r="viewers"></span></div>
+    <div class="player"><div data-r="yt"></div></div>
+    <div class="title" data-r="title">—</div>
+    <div class="ch" data-r="ch"></div>
+    ${isP?'':`
+    <div class="vol">音量<input type="range" min="0" max="100" data-r="vol"><span data-r="volv"></span></div>
+    <div class="progress" title="自動登録までの進み具合"><div data-r="prog"></div></div>
+    <div class="row">
+      <button class="warn" data-r="block" title="キー ${idx+1}">✕ 音楽・雨あり</button>
+      <button data-r="star">★ 登録</button>
+      <button data-r="solo">ソロで聴く</button>
+      <button data-r="next">次へ</button>
+    </div>`}
+    ${isP?`<div class="row"><button data-r="next">次へ</button></div>`:''}`;
+  const q = r=>el.querySelector(`[data-r="${r}"]`);
+  const s = {kind, idx, el, q, player:null, item:null, listenedSec:0};
+  if (!isP){
+    const vol = q('vol'); vol.value = S.volumes[idx]??50; q('volv').textContent = vol.value;
+    vol.oninput = ()=>{ S.volumes[idx]=+vol.value; q('volv').textContent=vol.value; applyVolumes(); save(); };
+    q('block').onclick = ()=>blockSlot(s);
+    q('star').onclick = ()=>favSlot(s,true);
+    q('solo').onclick = ()=>toggleSolo(s);
+  }
+  q('next').onclick = ()=>{ if (s.item) sessionSkip.add(s.item.videoId); fillSlot(s); };
+  return s;
+}
+function showEmpty(s, msg){
+  try{ s.player&&s.player.destroy(); }catch(e){}
+  s.player=null; s.item=null;
+  const box = s.el.querySelector('.player');
+  box.innerHTML = `<div class="empty">${msg}</div>`;
+  s.q('title').textContent='—'; s.q('ch').textContent=''; s.q('viewers').textContent=''; s.q('fav').hidden=true;
+}
+function loadItem(s, item){
+  s.item = item; s.listenedSec = S.listened[item.channelId]||0;
+  s.q('title').textContent = item.title; s.q('title').title = item.title;
+  s.q('ch').textContent = item.channelTitle;
+  s.q('viewers').textContent = item.viewers ? `👤 ${item.viewers.toLocaleString()}人が視聴中` : '';
+  s.q('fav').hidden = !S.favorites[item.channelId];
+  if (s.player && s.player.loadVideoById){ s.player.loadVideoById(item.videoId); applyVolumes(); return; }
+  const box = s.el.querySelector('.player');
+  box.innerHTML = '<div></div>';
+  s.player = new YT.Player(box.firstChild, {
+    width:356, height:200, videoId:item.videoId,
+    playerVars:{autoplay:1, playsinline:1, rel:0, modestbranding:1},
+    events:{
+      onReady:()=>{ applyVolumes(); s.player.playVideo(); },
+      onStateChange:e=>{ if (e.data===0) fillSlot(s); },
+      onError:()=>{ if (s.item) sessionBad.add(s.item.videoId); toast('再生できない配信だったので次へ'); fillSlot(s); }
+    }
+  });
+}
+let candidates = [];
+async function fillSlot(s){
+  const playing = new Set(slots.filter(x=>x!==s && x.item).map(x=>x.item.videoId));
+  const usable = c => !playing.has(c.videoId) && !sessionBad.has(c.videoId) && !sessionSkip.has(c.videoId);
+  let pick;
+  if (s.kind==='presence'){
+    // 存在枠：除外チャンネル（BGMつき）もOK。視聴者が多い順
+    pick = candidates.filter(usable).sort((a,b)=>b.viewers-a.viewers)[0];
+  } else {
+    pick = candidates.filter(c=>usable(c) && !S.blocked[c.channelId]).sort((a,b)=>score(b)-score(a))[0];
+  }
+  if (!pick && S.cache && Date.now()-S.cache.at > 10*60*1000){
+    try{ candidates = await fetchCandidates(true); return fillSlot(s); }catch(e){ toast(e.message); }
+  }
+  if (!pick){
+    showEmpty(s, s.kind==='presence' ? '流せるライブがありません' : '今は条件に合うライブが見つかりません。<br>合成環境音を上げています。');
+    if (s.kind==='sound') bumpAmbience();
+    updateLive(); return;
+  }
+  loadItem(s, pick); updateLive();
+}
+function applyVolumes(){
+  slots.forEach(s=>{
+    if (!s.player || !s.player.setVolume) return;
+    if (s.kind==='presence'){ s.player.mute(); return; }
+    const muted = soloIdx>=0 && soloIdx!==s.idx;
+    if (muted) s.player.mute(); else { s.player.unMute(); s.player.setVolume(S.volumes[s.idx]??50); }
+  });
+  amb.setSoloMute(soloIdx>=0);
+}
+function blockSlot(s){
+  if (!s.item) return;
+  const it = s.item;
+  S.blocked[it.channelId] = {title:it.channelTitle, at:Date.now()};
+  delete S.favorites[it.channelId];
+  learn(it,-1); save(); renderLists();
+  toast(`「${it.channelTitle}」を除外しました`);
+  if (soloIdx===s.idx){ soloIdx=-1; updateSoloButtons(); }
+  fillSlot(s);
+}
+function favSlot(s, manual){
+  if (!s.item) return;
+  const it = s.item;
+  if (S.favorites[it.channelId]) { if (manual) toast('すでに登録済みです'); return; }
+  S.favorites[it.channelId] = {title:it.channelTitle, lastVideoId:it.videoId, at:Date.now()};
+  delete S.blocked[it.channelId];
+  learn(it,+1); save(); renderLists();
+  s.q('fav').hidden = false;
+  toast(manual ? `「${it.channelTitle}」を登録しました` : `${S.autoFavMin}分聴いたので「${it.channelTitle}」を自動登録しました`);
+}
+function toggleSolo(s){
+  soloIdx = soloIdx===s.idx ? -1 : s.idx;
+  updateSoloButtons(); applyVolumes();
+}
+function updateSoloButtons(){
+  slots.forEach(s=>{ const b=s.q('solo'); if (b){ b.classList.toggle('on', soloIdx===s.idx); b.textContent = soloIdx===s.idx?'ソロ解除':'ソロで聴く'; } });
+}
+function updateLive(){
+  const n = slots.filter(s=>s.item).length;
+  document.getElementById('liveDot').classList.toggle('on', n>0);
+  document.getElementById('liveText').textContent = n>0 ? `${n}つのライブとつながっています` : (started?'ライブ待ち':'停止中');
+}
+function setStatus(t){ document.getElementById('liveText').textContent = t; }
+
+// 自動登録の計測（5秒ごと）
+setInterval(()=>{
+  slots.forEach(s=>{
+    if (s.kind!=='sound' || !s.item || !s.player || !s.player.getPlayerState || s.item.channelId.startsWith('manual:')) return;
+    if (s.player.getPlayerState()!==1) return;
+    if ((soloIdx>=0 && soloIdx!==s.idx) || (S.volumes[s.idx]??0)===0) return;
+    const ch = s.item.channelId;
+    S.listened[ch] = (S.listened[ch]||0) + 5;
+    const need = (+S.autoFavMin||15)*60;
+    const p = S.favorites[ch] ? 100 : Math.min(100, S.listened[ch]/need*100);
+    s.q('prog').style.width = p+'%';
+    if (!S.favorites[ch] && S.listened[ch] >= need) favSlot(s,false);
+  });
+  save();
+}, 5000);
+
+// 30分ごとに候補を更新（再生中の枠はそのまま）
+setInterval(async ()=>{ if (!started || !S.apiKey) return; try{ candidates = await fetchCandidates(false); updateLive(); }catch(e){} }, 31*60*1000);
+
+/* ========== キーボード ========== */
+document.addEventListener('keydown', e=>{
+  if (/INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
+  const n = +e.key;
+  if (n>=1 && n<=3){ const s = slots.find(x=>x.kind==='sound' && x.idx===n-1); if (s) blockSlot(s); }
+});
+
+/* ========== 合成環境音（Web Audio） ========== */
+const amb = (()=>{
+  let ctx, master, hvacG, typeG, paperG, soloMute=false, timers=[];
+  function noiseBuf(sec, brown){
+    const b = ctx.createBuffer(1, ctx.sampleRate*sec, ctx.sampleRate), d=b.getChannelData(0);
+    let last=0;
+    for (let i=0;i<d.length;i++){ const w=Math.random()*2-1; if (brown){ last=(last+0.02*w)/1.02; d[i]=last*3.5; } else d[i]=w; }
+    return b;
+  }
+  let white;
+  function start(){
+    if (ctx) return;
+    ctx = new (window.AudioContext||window.webkitAudioContext)();
+    master = ctx.createGain(); master.connect(ctx.destination);
+    white = noiseBuf(2,false);
+    // 空調
+    hvacG = ctx.createGain(); hvacG.connect(master);
+    const src = ctx.createBufferSource(); src.buffer = noiseBuf(8,true); src.loop=true;
+    const lp = ctx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=380;
+    src.connect(lp); lp.connect(hvacG); src.start();
+    typeG = ctx.createGain(); typeG.connect(master);
+    paperG = ctx.createGain(); paperG.connect(master);
+    // 周りの人（3人分のタイピング）
+    for (let p=0;p<3;p++) typist(p);
+    paperLoop();
+    apply();
+  }
+  function click(t, pan, strength){
+    const s = ctx.createBufferSource(); s.buffer = white;
+    const bp = ctx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value = 1800+Math.random()*2200; bp.Q.value=1.2;
+    const g = ctx.createGain(); const pn = ctx.createStereoPanner(); pn.pan.value = pan;
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.5*strength, t+0.002); g.gain.exponentialRampToValueAtTime(0.001, t+0.035+Math.random()*0.02);
+    s.connect(bp); bp.connect(g); g.connect(pn); pn.connect(typeG);
+    s.start(t, Math.random()*1.5, 0.08);
+  }
+  function typist(p){
+    const pan = [-0.6,0.15,0.7][p], strength=[0.5,0.8,0.35][p];
+    const burst = ()=>{
+      if (!ctx) return;
+      let t = ctx.currentTime+0.05;
+      const n = 4+Math.floor(Math.random()*30);
+      for (let i=0;i<n;i++){ t += 0.07+Math.random()*0.16 + (Math.random()<0.12?0.35:0); click(t,pan,strength*(0.7+Math.random()*0.5)); }
+      const wait = (t-ctx.currentTime)*1000 + 1500 + Math.random()*9000;
+      timers.push(setTimeout(burst, wait));
+    };
+    timers.push(setTimeout(burst, Math.random()*4000));
+  }
+  function paperLoop(){
+    const go = ()=>{
+      if (!ctx) return;
+      const t = ctx.currentTime+0.05, dur = 0.25+Math.random()*0.6, kind=Math.random();
+      const s = ctx.createBufferSource(); s.buffer=white;
+      const bp = ctx.createBiquadFilter(); bp.type='bandpass';
+      bp.frequency.value = kind<0.5 ? 3500+Math.random()*2500 : 5000+Math.random()*2000; bp.Q.value = kind<0.5?0.8:3;
+      const g = ctx.createGain(); const pn=ctx.createStereoPanner(); pn.pan.value=Math.random()*1.4-0.7;
+      g.gain.setValueAtTime(0,t);
+      if (kind<0.5){ // 紙をめくる
+        g.gain.linearRampToValueAtTime(0.25,t+dur*0.3); g.gain.linearRampToValueAtTime(0,t+dur);
+      } else {       // ペンで書く（細かい強弱）
+        const steps = 6+Math.floor(Math.random()*10);
+        for (let i=0;i<steps;i++){ const tt=t+i*dur*1.5/steps; g.gain.linearRampToValueAtTime(0.06+Math.random()*0.08,tt+0.02); g.gain.linearRampToValueAtTime(0.01,tt+dur*1.5/steps); }
+      }
+      s.connect(bp); bp.connect(g); g.connect(pn); pn.connect(paperG);
+      s.start(t, Math.random()*0.5, dur*1.6);
+      timers.push(setTimeout(go, 4000+Math.random()*16000));
+    };
+    timers.push(setTimeout(go, 3000));
+  }
+  function apply(){
+    if (!ctx) return;
+    const k = soloMute?0:1;
+    hvacG.gain.value  = (S.amb.hvac/100)*0.35*k;
+    typeG.gain.value  = (S.amb.type/100)*0.9*k;
+    paperG.gain.value = (S.amb.paper/100)*0.9*k;
+  }
+  return { start, apply, setSoloMute:v=>{ soloMute=v; apply(); } };
+})();
+function bumpAmbience(){
+  let changed=false;
+  if (S.amb.type<35){ S.amb.type=35; changed=true; }
+  if (S.amb.paper<25){ S.amb.paper=25; changed=true; }
+  if (changed){ syncAmbSliders(); amb.apply(); save(); }
+}
+function syncAmbSliders(){
+  document.getElementById('ambHvac').value=S.amb.hvac;
+  document.getElementById('ambType').value=S.amb.type;
+  document.getElementById('ambPaper').value=S.amb.paper;
+}
+[['ambHvac','hvac'],['ambType','type'],['ambPaper','paper']].forEach(([id,k])=>{
+  document.getElementById(id).oninput = e=>{ S.amb[k]=+e.target.value; amb.apply(); save(); };
+});
+
+/* ========== 開始 ========== */
+document.getElementById('startBtn').onclick = async ()=>{
+  amb.start();
+  if (!ytReady){ toast('YouTubeの読み込み待ちです。数秒後にもう一度押してください'); return; }
+  started = true;
+  document.getElementById('startArea').style.display='none';
+  buildSlots();
+  if (!S.apiKey){
+    slots.forEach(s=>showEmpty(s,'APIキーが未設定です。<br>下の「設定」から入力するか、URLを直接再生できます。'));
+    bumpAmbience();
+    document.getElementById('settingsBox').open = true;
+    updateLive(); return;
+  }
+  try{ candidates = await fetchCandidates(false); }
+  catch(e){ toast(e.message); candidates = (S.cache&&S.cache.items)||[]; }
+  for (const s of slots) await fillSlot(s);
+};
+
+/* ========== 設定・一覧 ========== */
+function loadSettingsUI(){
+  document.getElementById('apiKey').value = S.apiKey;
+  document.getElementById('slotCount').value = S.slotCount;
+  document.getElementById('autoFavMin').value = S.autoFavMin;
+  document.getElementById('presence').checked = S.presence;
+  document.getElementById('queries').value = S.queries.join('\n');
+  document.getElementById('originHint').textContent = location.origin + '/*';
+  syncAmbSliders(); renderLists();
+}
+document.getElementById('saveSettings').onclick = async ()=>{
+  const newKey = document.getElementById('apiKey').value.trim();
+  const keyChanged = newKey!==S.apiKey;
+  S.apiKey = newKey;
+  S.slotCount = Math.max(1,Math.min(3,+document.getElementById('slotCount').value||2));
+  S.autoFavMin = Math.max(1,+document.getElementById('autoFavMin').value||15);
+  S.presence = document.getElementById('presence').checked;
+  const qs = document.getElementById('queries').value.split('\n').map(x=>x.trim()).filter(Boolean);
+  const qChanged = qs.join('|')!==S.queries.join('|');
+  S.queries = qs.length?qs:DEFAULT_QUERIES.slice();
+  if (keyChanged||qChanged) S.cache = null;
+  save(); toast('保存しました');
+  if (started){
+    buildSlots();
+    if (S.apiKey){ try{ candidates = await fetchCandidates(false); }catch(e){ toast(e.message); } }
+    for (const s of slots) await fillSlot(s);
+  }
+};
+document.getElementById('refreshBtn').onclick = async ()=>{
+  try{ candidates = await fetchCandidates(true); toast(`${candidates.length}件のライブが見つかりました`); }catch(e){ toast(e.message); }
+};
+document.getElementById('manualBtn').onclick = ()=>{
+  const v = document.getElementById('manualUrl').value.trim();
+  const m = v.match(/(?:v=|youtu\.be\/|live\/|embed\/)([\w-]{11})/) || v.match(/^([\w-]{11})$/);
+  if (!m){ toast('YouTubeのURLを読み取れませんでした'); return; }
+  if (!started){ toast('先に「開始」を押してください'); return; }
+  const s = slots.find(x=>x.kind==='sound');
+  loadItem(s,{videoId:m[1], channelId:'manual:'+m[1], channelTitle:'（手動で追加）', title:v, viewers:0});
+  updateLive();
+};
+function renderLists(){
+  const mk = (obj, id, onRemove, label) => {
+    const el = document.getElementById(id); el.innerHTML='';
+    const ents = Object.entries(obj).sort((a,b)=>(b[1].at||0)-(a[1].at||0));
+    if (!ents.length){ el.innerHTML='<div class="muted">まだありません</div>'; return; }
+    ents.forEach(([ch,v])=>{
+      const row=document.createElement('div');
+      const a=document.createElement('a'); a.href='https://www.youtube.com/channel/'+ch; a.target='_blank'; a.rel='noopener'; a.textContent=v.title||ch; a.style.color='inherit';
+      const b=document.createElement('button'); b.textContent=label; b.onclick=()=>{ onRemove(ch); save(); renderLists(); };
+      row.append(a,b); el.appendChild(row);
+    });
+  };
+  mk(S.favorites,'favList',ch=>delete S.favorites[ch],'解除');
+  mk(S.blocked,'blockList',ch=>delete S.blocked[ch],'戻す');
+}
+document.getElementById('exportBtn').onclick = ()=>{
+  const data = Object.assign({}, S); data.apiKey=''; data.cache=null;
+  const blob = new Blob([JSON.stringify(data,null,1)],{type:'application/json'});
+  const a = document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='virtual-office-data.json'; a.click();
+};
+document.getElementById('importBtn').onclick = ()=>document.getElementById('importFile').click();
+document.getElementById('importFile').onchange = async e=>{
+  const f = e.target.files[0]; if (!f) return;
+  try{
+    const d = JSON.parse(await f.text());
+    ['favorites','blocked','tokenW','listened'].forEach(k=>{ if (d[k]) S[k]=Object.assign({},S[k],d[k]); });
+    save(); renderLists(); toast('読み込みました');
+  }catch(err){ toast('読み込みに失敗しました'); }
+};
+document.getElementById('resetLearn').onclick = ()=>{ S.tokenW={}; save(); toast('キーワード学習をリセットしました'); };
+
+let toastT;
+function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove('show'),3500); }
+
+loadSettingsUI();
+</script>
+</body>
+</html>
