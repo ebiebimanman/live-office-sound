@@ -61,10 +61,10 @@
 </head>
 <body>
 <header>
-  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v9</span>
+  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v10</span>
   <span class="live"><span class="dot" id="liveDot"></span><span id="liveText">停止中</span></span>
   <span class="spacer"></span>
-  <button id="silenceBtn" title="タブの音声を測って、無音の配信を自動で除外します">🔇 無音チェック：オフ</button>
+  <button id="silenceBtn" title="このタブの音と映像を共有すると、無音の配信の自動除外と、動画の動きに合わせた効果音が使えます">🔇 無音チェック・動き連動：オフ</button>
   <span class="muted">音楽・雨・無音なら <span class="kbd">1</span><span class="kbd">2</span><span class="kbd">3</span>（その枠を除外）</span>
 </header>
 
@@ -98,7 +98,8 @@
           ／ 自動登録まで <input type="number" id="autoFavMin" min="1" max="120" style="width:64px"> 分
         </div>
         <div class="muted" style="margin-top:8px">
-          <label><input type="checkbox" id="presence"> 存在枠を追加（BGMつきでもOK、ミュートで画面だけ流す）</label>
+          <label><input type="checkbox" id="presence"> 存在枠を追加（BGMつきでもOK、ミュートで画面だけ流す）</label><br>
+          <label><input type="checkbox" id="motionLink"> 動画の動きにタイピング音を連動させる（画面共有中のみ）</label>
         </div>
         <div class="muted" style="margin-top:8px">検索ワード（1行に1つ）</div>
         <textarea id="queries" rows="6" style="width:100%"></textarea>
@@ -329,7 +330,7 @@ function makeSlot(kind, idx){
   el.className='slot';
   const isP = kind==='presence';
   el.innerHTML = `
-    <div class="head"><span class="badge">${isP?'存在枠（ミュート）':'音 '+(idx+1)}</span><span class="badge fav" data-r="fav" hidden>★ 登録済み</span><span class="spacer"></span><span data-r="viewers"></span></div>
+    <div class="head"><span class="badge">${isP?'存在枠（ミュート）':'音 '+(idx+1)}</span><span class="badge fav" data-r="fav" hidden>★ 登録済み</span><span class="spacer"></span><span data-r="motion" class="muted" title="動画の動き（共有中のみ）"></span><span data-r="viewers"></span></div>
     <div class="player"><div data-r="yt"></div></div>
     <div class="title" data-r="title">—</div>
     <div class="ch" data-r="ch"></div>
@@ -421,7 +422,7 @@ const checkedOk = new Set(); // このセッションで音ありと確認した
 function capActive(){ return !!(capStream && capStream.getAudioTracks().some(t=>t.readyState==='live')); }
 function updateSilenceBtn(){
   const b = document.getElementById('silenceBtn');
-  b.textContent = capActive() ? '🔊 無音チェック：オン' : '🔇 無音チェック：オフ';
+  b.textContent = capActive() ? '🔊 無音チェック・動き連動：オン' : '🔇 無音チェック・動き連動：オフ';
   b.classList.toggle('on', capActive());
 }
 async function enableSilenceCheck(){
@@ -430,11 +431,11 @@ async function enableSilenceCheck(){
   toast('共有画面で「このタブ」を選び、「タブの音声も共有する」をオンにしてください');
   try{
     capStream = await navigator.mediaDevices.getDisplayMedia({
-      video:{width:2,height:2,frameRate:1}, audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false,suppressLocalAudioPlayback:false},
+      video:{width:{ideal:960},frameRate:{ideal:5,max:8}}, audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false,suppressLocalAudioPlayback:false},
       preferCurrentTab:true, selfBrowserSurface:'include', systemAudio:'exclude', surfaceSwitching:'exclude'
     });
   }catch(e){ toast('無音チェックはオフのままです'); updateSilenceBtn(); return false; }
-  capStream.getVideoTracks().forEach(t=>t.enabled=false);
+  startMotion(capStream.getVideoTracks()[0]);
   if (!capStream.getAudioTracks().length){
     capStream.getTracks().forEach(t=>t.stop()); capStream=null;
     toast('音声が共有されていません。「タブの音声も共有する」をオンにしてやり直してください');
@@ -450,6 +451,60 @@ async function enableSilenceCheck(){
   slots.forEach(s=>{ if (s.kind==='sound' && s.item) queueCheck(s); });
   return true;
 }
+/* ========== 動画の動き検出（共有中のタブ映像からフレーム差分を取る） ========== */
+let motionVideo = null, motionTimer = null;
+const MG = 24; // 1枠を 24×14 マスで比べる
+function startMotion(track){
+  if (!track) return;
+  motionVideo = document.createElement('video');
+  motionVideo.muted = true; motionVideo.playsInline = true;
+  motionVideo.srcObject = new MediaStream([track]);
+  motionVideo.play().catch(()=>{});
+  const cv = document.createElement('canvas'); const cx = cv.getContext('2d', {willReadFrequently:true});
+  clearInterval(motionTimer);
+  motionTimer = setInterval(()=>{
+    // 共有していない／このタブが裏に回っている（映像が更新されない）ときは連動しない
+    if (!capActive() || !motionVideo.videoWidth || document.hidden){ amb.setActivity(null); slots.forEach(s=>s.q&&s.q('motion')&&(s.q('motion').textContent='')); return; }
+    const vw = motionVideo.videoWidth, vh = motionVideo.videoHeight;
+    cv.width = 320; cv.height = Math.round(320*vh/vw);
+    cx.drawImage(motionVideo, 0, 0, cv.width, cv.height);
+    const sx = cv.width / window.innerWidth, sy = cv.height / window.innerHeight;
+    let best = null;
+    slots.forEach(s=>{
+      if (s.kind!=='sound' || !s.item){ s.motionPrev=null; s.q('motion').textContent=''; return; }
+      const r = s.el.querySelector('.player').getBoundingClientRect();
+      if (r.bottom<0 || r.top>window.innerHeight || r.width<10){ s.q('motion').textContent='（画面外）'; s.motionPrev=null; return; }
+      const x = Math.max(0, Math.round(r.left*sx)), y = Math.max(0, Math.round(r.top*sy));
+      const w = Math.min(cv.width-x, Math.round(r.width*sx)), hh = Math.min(cv.height-y, Math.round(r.height*sy));
+      if (w<8 || hh<8) return;
+      const d = cx.getImageData(x, y, w, hh).data;
+      // マスごとの明るさ
+      const gh = 14, cur = new Float32Array(MG*gh), cnt = new Uint16Array(MG*gh);
+      for (let yy=0; yy<hh; yy+=2) for (let xx=0; xx<w; xx+=2){
+        const i = (yy*w+xx)*4, gi = Math.min(gh-1, Math.floor(yy/hh*gh))*MG + Math.min(MG-1, Math.floor(xx/w*MG));
+        cur[gi] += d[i]*0.3 + d[i+1]*0.59 + d[i+2]*0.11; cnt[gi]++;
+      }
+      for (let i=0;i<cur.length;i++) cur[i] /= Math.max(1,cnt[i]);
+      let diff = 0, moved = 0;
+      if (s.motionPrev){
+        for (let i=0;i<cur.length;i++){ const dd = Math.abs(cur[i]-s.motionPrev[i]); diff += dd; if (dd>4) moved++; }
+        diff /= cur.length;
+      }
+      s.motionPrev = cur;
+      // 再生中でないとき（バッファ中・停止）は判定しない
+      if (!s.player || !s.player.getPlayerState || s.player.getPlayerState()!==1){ s.q('motion').textContent='動き：—'; return; }
+      // 動いたマスの割合を 0〜1 に。少しの動きでも反応し、大きく動くほど強く
+      const ratio = moved / cur.length;
+      const raw = Math.min(1, Math.sqrt(ratio/0.12));
+      s.motion = (s.motion??0) + (raw - (s.motion??0)) * (raw > (s.motion??0) ? 0.6 : 0.15);
+      const bars = Math.round(s.motion*5);
+      s.q('motion').textContent = '動き ' + '▮'.repeat(bars) + '▯'.repeat(5-bars);
+      best = Math.max(best??0, s.motion);
+    });
+    amb.setActivity(S.motionLink===false ? null : best);
+  }, 250);
+}
+
 document.getElementById('silenceBtn').onclick = ()=>{ if (!capActive()) enableSilenceCheck(); };
 const sleep = ms=>new Promise(r=>setTimeout(r,ms));
 // 4秒間の音量（RMS）の最大値を測る
@@ -592,7 +647,7 @@ const amb = (()=>{
     pen:      {x:-0.7,  z:-1.4, lp:12000},  // 左斜め前
     mouse:    {x: 0.45, z:-1.6, lp:12000},  // 向かいの席の人のマウス
   };
-  let ctx, master, hvacG, typeG, penG, mouseG, soloMute=false, bufs={}, loading=null;
+  let ctx, master, hvacG, typeG, penG, mouseG, actG=null, actFarG=null, soloMute=false, bufs={}, loading=null;
   const R = (a,b)=>a+Math.random()*(b-a);
 
   function noiseBuf(c, sec){
@@ -646,8 +701,11 @@ const amb = (()=>{
   }
   function startLayers(){
     const reverb = makeReverb(ctx); const wet = ctx.createGain(); wet.gain.value=0.25; reverb.connect(wet); wet.connect(master);
-    const outNear = seatOut(ctx, SEATS.typeNear, typeG, reverb, 0.08);
-    const outFar  = seatOut(ctx, SEATS.typeFar,  typeG, reverb, 0.3);
+    const nearSeat = seatOut(ctx, SEATS.typeNear, typeG, reverb, 0.08);
+    actG = ctx.createGain(); actG.gain.value = 1; actG.connect(nearSeat);
+    const outNear = actG;
+    actFarG = ctx.createGain(); actFarG.gain.value = 1; actFarG.connect(seatOut(ctx, SEATS.typeFar, typeG, reverb, 0.3));
+    const outFar = actFarG;
     const outPen  = seatOut(ctx, SEATS.pen,      penG,  reverb, 0.1);
     const outMouse= seatOut(ctx, SEATS.mouse,    mouseG,reverb, 0.08);
     const T = bufs.typing, P = bufs.pen, M = bufs.mouse;
@@ -703,7 +761,15 @@ const amb = (()=>{
     penG.gain.value   = (S.amb.paper/100)*k;
     mouseG.gain.value = ((S.amb.mouse??30)/100)*k;
   }
-  return { start, apply, setSoloMute:v=>{ soloMute=v; apply(); } };
+  // 動画の動き（0〜1、null は連動なし）に合わせてタイピングの強さを変える
+  function setActivity(a){
+    if (!ctx || !actG) return;
+    const near = a==null ? 1 : 0.08 + 0.92*a;          // 動きがないとほぼ止まる
+    const far  = a==null ? 1 : 0.5 + 0.5*Math.min(1,a*1.5); // 遠くの人は少しだけ連動
+    actG.gain.setTargetAtTime(near, ctx.currentTime, a!=null && near>actG.gain.value ? 0.25 : 1.2);
+    actFarG.gain.setTargetAtTime(far, ctx.currentTime, 1.5);
+  }
+  return { start, apply, setActivity, setSoloMute:v=>{ soloMute=v; apply(); } };
 })();
 function bumpAmbience(){
   let changed=false;
@@ -746,6 +812,7 @@ function loadSettingsUI(){
   document.getElementById('slotCount').value = S.slotCount;
   document.getElementById('autoFavMin').value = S.autoFavMin;
   document.getElementById('presence').checked = S.presence;
+  document.getElementById('motionLink').checked = S.motionLink!==false;
   document.getElementById('queries').value = S.queries.join('\n');
   document.getElementById('excludeWords').value = S.excludeWords.join('\n');
   document.getElementById('requireWords').value = S.requireWords.join('\n');
@@ -760,6 +827,7 @@ document.getElementById('saveSettings').onclick = async ()=>{
   S.slotCount = Math.max(1,Math.min(3,+document.getElementById('slotCount').value||2));
   S.autoFavMin = Math.max(1,+document.getElementById('autoFavMin').value||15);
   S.presence = document.getElementById('presence').checked;
+  S.motionLink = document.getElementById('motionLink').checked;
   const qs = document.getElementById('queries').value.split('\n').map(x=>x.trim()).filter(Boolean);
   const qChanged = qs.join('|')!==S.queries.join('|');
   S.queries = qs.length?qs:DEFAULT_QUERIES.slice();
