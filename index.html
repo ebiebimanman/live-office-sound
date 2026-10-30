@@ -61,7 +61,7 @@
 </head>
 <body>
 <header>
-  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v8</span>
+  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v9</span>
   <span class="live"><span class="dot" id="liveDot"></span><span id="liveText">停止中</span></span>
   <span class="spacer"></span>
   <button id="silenceBtn" title="タブの音声を測って、無音の配信を自動で除外します">🔇 無音チェック：オフ</button>
@@ -77,13 +77,14 @@
   <div class="slots" id="slots"></div>
 
   <section class="box">
-    <h2>合成環境音（YouTubeを使わない軽い背景音）</h2>
+    <h2>オフィスの環境音（YouTubeを使わない軽い背景音）</h2>
     <div class="amb">
       <label>空調のゴーッという音<input type="range" min="0" max="100" id="ambHvac"></label>
       <label>周りのタイピング<input type="range" min="0" max="100" id="ambType"></label>
-      <label>紙・ペンの音<input type="range" min="0" max="100" id="ambPaper"></label>
+      <label>ペンで書く音<input type="range" min="0" max="100" id="ambPaper"></label>
+      <label>マウスの音<input type="range" min="0" max="100" id="ambMouse"></label>
     </div>
-    <div class="muted" style="margin-top:6px">ライブの候補が見つからないときは自動で少し上がります。</div>
+    <div class="muted" style="margin-top:6px">ライブの候補が見つからないときは自動で少し上がります。録音素材：<a href="https://freesound.org/people/SduggySounds/sounds/725718/" target="_blank" rel="noopener" style="color:inherit">SduggySounds</a>／<a href="https://freesound.org/people/black_trillium/sounds/397282/" target="_blank" rel="noopener" style="color:inherit">black_trillium</a>／<a href="https://freesound.org/people/mrfineppine/sounds/244651/" target="_blank" rel="noopener" style="color:inherit">mrfineppine</a>（Freesound, CC0）</div>
   </section>
 
   <details id="settingsBox">
@@ -183,12 +184,13 @@ const defaults = () => ({
   apiKey:'', slotCount:2, autoFavMin:15, presence:false, queries:DEFAULT_QUERIES.slice(),
   requireWords:DEFAULT_REQUIRE.slice(), excludeWords:DEFAULT_EXCLUDE.slice(), allowWords:DEFAULT_ALLOW.slice(),
   favorites:{}, blocked:{}, tokenW:{}, listened:{}, volumes:[60,40,30],
-  amb:{hvac:15,type:0,paper:0}, cache:null
+  amb:{hvac:15,type:50,paper:40,mouse:30}, cache:null
 });
 let S = defaults();
 try { const raw = localStorage.getItem(STORE_KEY); if (raw) S = Object.assign(defaults(), JSON.parse(raw)); } catch(e){}
 if (!S.migratedV2){ ['english','英語','listening','リスニング','podcast','ニュース','news'].forEach(w=>{ if(!S.excludeWords.includes(w)) S.excludeWords.unshift(w); }); S.migratedV2=true; }
 if (!S.migratedV3){ ['無音','音なし','音無し','音声なし','音声無し','ミュート','mute','muted','silent','silence','no sound','no audio'].forEach(w=>{ if(!S.excludeWords.includes(w)) S.excludeWords.unshift(w); }); S.migratedV3=true; }
+if (!S.migratedV4){ S.amb = Object.assign({hvac:15}, S.amb, {type:50,paper:40,mouse:30}); S.migratedV4=true; }
 if (S.cache && S.cache.v!==4) S.cache = null; // 古い形式の候補キャッシュは捨てる
 function save(){ try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch(e){} }
 
@@ -395,7 +397,7 @@ async function fillSlot(s){
   }
   if (!pick){
     const why = lastErr ? `<br><small style="color:var(--warn)">${lastErr.replace(/</g,'&lt;')}</small>` : '';
-    showEmpty(s, (s.kind==='presence' ? '流せるライブがありません' : '今は条件に合うライブが見つかりません。<br>合成環境音を上げています。') + why);
+    showEmpty(s, (s.kind==='presence' ? '流せるライブがありません' : '今は条件に合うライブが見つかりません。<br>オフィスの環境音を上げています。') + why);
     if (s.kind==='sound') bumpAmbience();
     updateLive(); return;
   }
@@ -575,222 +577,133 @@ document.addEventListener('keydown', e=>{
   if (n>=1 && n<=3){ const s = slots.find(x=>x.kind==='sound' && x.idx===n-1); if (s) blockSlot(s); }
 });
 
-/* ========== 合成環境音（Web Audio） ========== */
+/* ========== オフィスの環境音（録音素材＋Web Audio） ========== */
 const amb = (()=>{
-  let ctx, master, hvacG, typeG, paperG, typeW, paperW, soloMute=false;
-  let white, brown, reverb;
+  /* 録音素材（すべて Freesound の CC0） */
+  const FILES = { typing:'sound/typing.mp3', pen:'sound/pen.mp3', mouse:'sound/mouse.mp3' };
+  // 素材ごとの音量のならし（元の録音レベルの差を埋める）
+  const TRIM = { typing:1.9, pen:1.0, mouse:2.2 };
+  // マウス録音のうち、音が鳴っている区間（秒）
+  const MOUSE_EVENTS = [[0,0.65],[2.5,2.8],[4.72,5.25],[6.62,7.0],[8.72,9.1],[10.62,12.6],[12.6,15.55]];
+  // 座席：あなたは原点で前（-z）を向いて座っている。机の高さは少し下（y=-0.4）
+  const SEATS = {
+    typeNear: {x: 0.45, z:-1.6, lp:12000},  // 向かいの席
+    typeFar:  {x: 1.8,  z:-4.5, lp:3500 },  // 右前の離れた席
+    pen:      {x:-0.7,  z:-1.4, lp:12000},  // 左斜め前
+    mouse:    {x: 0.45, z:-1.6, lp:12000},  // 向かいの席の人のマウス
+  };
+  let ctx, master, hvacG, typeG, penG, mouseG, soloMute=false, bufs={}, loading=null;
   const R = (a,b)=>a+Math.random()*(b-a);
-  function noiseBuf(c, sec, brownish){
+
+  function noiseBuf(c, sec){
     const b = c.createBuffer(1, Math.floor(c.sampleRate*sec), c.sampleRate), d=b.getChannelData(0);
     let last=0;
-    for (let i=0;i<d.length;i++){ const w=Math.random()*2-1; if (brownish){ last=(last+0.02*w)/1.02; d[i]=last*3.5; } else d[i]=w; }
+    for (let i=0;i<d.length;i++){ const w=Math.random()*2-1; last=(last+0.02*w)/1.02; d[i]=last*3.5; }
     return b;
   }
-  // 部屋の響き（短いリバーブ）
   function makeReverb(c){
-    const len = Math.floor(c.sampleRate*0.9), b = c.createBuffer(2,len,c.sampleRate);
-    for (let ch=0;ch<2;ch++){ const d=b.getChannelData(ch); for (let i=0;i<len;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/len,3.2)*0.5; }
-    const cv = c.createConvolver(); cv.buffer = b; return cv;
+    const len = Math.floor(c.sampleRate*0.8), b = c.createBuffer(2,len,c.sampleRate);
+    for (let ch=0;ch<2;ch++){ const d=b.getChannelData(ch); for (let i=0;i<len;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/len,3.5)*0.4; }
+    const cv = c.createConvolver(); cv.buffer=b; return cv;
   }
-  function env(g, t, peak, attack, decay){
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(Math.max(peak,0.0002), t+attack);
-    g.gain.exponentialRampToValueAtTime(0.0001, t+attack+decay);
+  // 席ごとの出口：モノラルにまとめる → こもり → 立体配置 → 音量バス
+  function seatOut(c, seat, bus, reverb, wet){
+    const mono = c.createGain(); mono.channelCount=1; mono.channelCountMode='explicit'; mono.channelInterpretation='speakers';
+    const lp = c.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=seat.lp;
+    const pn = c.createPanner(); pn.panningModel='HRTF'; pn.distanceModel='inverse'; pn.refDistance=1.2; pn.rolloffFactor=1;
+    if (pn.positionX){ pn.positionX.value=seat.x; pn.positionY.value=-0.4; pn.positionZ.value=seat.z; } else pn.setPosition(seat.x,-0.4,seat.z);
+    mono.connect(lp); lp.connect(pn); pn.connect(bus);
+    const ws = c.createGain(); ws.gain.value = wet; lp.connect(ws); ws.connect(reverb);
+    return mono;
   }
-  function noiseHit(c, out, t, type, freq, q, peak, attack, decay){
-    const s = c.createBufferSource(); s.buffer = white;
-    const f = c.createBiquadFilter(); f.type=type; f.frequency.value=freq; f.Q.value=q;
-    const g = c.createGain(); env(g,t,peak,attack,decay);
-    s.connect(f); f.connect(g); g.connect(out);
-    s.start(t, R(0,1.5), attack+decay+0.02);
+  // 録音の一部分をフェードつきで鳴らす
+  function playSegment(c, buf, out, t, offset, dur, fade, gain){
+    const s = c.createBufferSource(); s.buffer = buf;
+    const g = c.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(gain, t+fade);
+    g.gain.setValueAtTime(gain, t+Math.max(fade, dur-fade));
+    g.gain.linearRampToValueAtTime(0, t+dur);
+    s.connect(g); g.connect(out);
+    s.start(t, offset, dur+0.05);
   }
-  function toneHit(c, out, t, freq, peak, decay){
-    const o = c.createOscillator(); o.type='sine';
-    o.frequency.setValueAtTime(freq*1.15,t); o.frequency.exponentialRampToValueAtTime(freq,t+0.02);
-    const g = c.createGain(); env(g,t,peak,0.002,decay);
-    o.connect(g); g.connect(out); o.start(t); o.stop(t+decay+0.05);
-  }
-
-  /* ---- タイピング ---- */
-  // キー1打：低めの「コトッ」＋控えめなクリック＋指を離す音
-  function key(c, kb, t, vel, kind){
-    const out = kb.input;
-    const big = kind==='space' || kind==='enter';
-    const tf = kb.thockF * (big?0.75:R(0.9,1.12));
-    noiseHit(c,out,t,'bandpass',tf,1.4, 0.55*vel*(big?1.25:1), 0.003, big?0.12:R(0.06,0.085));
-    toneHit(c,out,t, kb.bodyF*(big?0.8:R(0.95,1.05)), 0.16*vel*(big?1.4:1), big?0.09:0.06);
-    noiseHit(c,out,t,'bandpass',kb.clickF*R(0.9,1.1),2.2, 0.22*vel, 0.002, 0.025);
-    const up = t + (big?R(0.1,0.16):R(0.065,0.11));
-    noiseHit(c,out,up,'bandpass',tf*1.1,1.6, 0.2*vel, 0.002, 0.045);
-    noiseHit(c,out,up,'bandpass',kb.clickF*1.05,2.5, 0.06*vel, 0.002, 0.02);
-  }
-  // 1文ぶん打つ。終わる時刻を返す
-  function typeSentence(c, kb, t){
-    const speed = kb.speed * R(0.8,1.25);           // その文の勢い
-    const words = 3 + Math.floor(Math.random()*10);
-    for (let w=0; w<words; w++){
-      const len = 2 + Math.floor(Math.random()*7);
-      for (let i=0;i<len;i++){
-        // 単語の最初はやや遅く、途中は速い。ときどき引っかかる
-        let gap = speed * (i===0 ? R(1.1,1.6) : R(0.55,1.15));
-        if (Math.random()<0.06) gap += R(0.15,0.45);
-        t += gap;
-        key(c, kb, t, R(0.55,1)*(i===0?1.1:1), 'key');
-      }
-      t += speed*R(0.8,1.4);
-      key(c, kb, t, R(0.7,1), 'space');
-      // 打ち間違い → バックスペース連打
-      if (Math.random()<0.08){
-        t += R(0.25,0.7);
-        const n = 2+Math.floor(Math.random()*5);
-        for (let i=0;i<n;i++){ t += R(0.08,0.12); key(c, kb, t, R(0.6,0.85), 'key'); }
-        t += R(0.2,0.5);
-      }
-      // 考え中の間
-      if (Math.random()<0.15) t += R(0.6,2.5);
-    }
-    if (Math.random()<0.5){ t += R(0.3,0.8); key(c, kb, t, R(0.85,1.1), 'enter'); }
-    return t;
-  }
-  // 座席：あなたは原点で前（-z）を向いて座っている。机の高さは少し下（y=-0.4）
-  //  0: 向かいの席の人（正面やや右・近い）
-  //  1: 斜め前の島の人（左前・中くらい）
-  //  2: 少し離れた席の人（右前・遠い）
-  const SEATS = [
-    {x: 0.45, z:-1.6, lp:5200, wet:0.12},
-    {x:-1.2,  z:-2.8, lp:4200, wet:0.22},
-    {x: 1.8,  z:-4.5, lp:3200, wet:0.35},
-  ];
-  function seatPanner(c, seat){
-    const pn = c.createPanner();
-    pn.panningModel='HRTF'; pn.distanceModel='inverse'; pn.refDistance=1.2; pn.rolloffFactor=1;
-    if (pn.positionX){ pn.positionX.value=seat.x; pn.positionY.value=-0.4; pn.positionZ.value=seat.z; }
-    else pn.setPosition(seat.x,-0.4,seat.z);
-    return pn;
-  }
-  function makeTypist(c, dry, wet, p){
-    const seat = SEATS[p];
-    const lp = c.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value = seat.lp; // 遠い人ほどこもる
-    const pn = seatPanner(c, seat);
-    const input = c.createGain();
-    input.connect(lp); lp.connect(pn); pn.connect(dry);
-    const ws = c.createGain(); ws.gain.value = seat.wet; lp.connect(ws); ws.connect(wet); // 遠い人ほど響きが多い
-    return { input,
-      thockF: [900,780,1000][p]*R(0.96,1.04), bodyF:[300,260,330][p], clickF:[2500,2200,2800][p],
-      speed: [0.15,0.19,0.13][p] };
-  }
-
-  /* ---- ペンで書く ---- */
-  // 紙をこする連続音を、画（ストローク）ごとに強弱・音程をつけて鳴らす。終わる時刻を返す
-  const PEN_SEAT = {x:-0.7, z:-1.4};
-  function writeSession(c, dest, wet, t){
-    const pan = seatPanner(c, PEN_SEAT);
-    const ws = c.createGain(); ws.gain.value = 0.15; pan.connect(ws); ws.connect(wet);
-    const g = c.createGain(); g.gain.value = 0;
-    const bp = c.createBiquadFilter(); bp.type='bandpass'; bp.Q.value=0.8;
-    const lp = c.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=4200;
-    const s = c.createBufferSource(); s.buffer=white; s.loop=true;
-    // 低いザラつき（紙と机の鳴り）
-    const s2 = c.createBufferSource(); s2.buffer=brown; s2.loop=true;
-    const lp2 = c.createBiquadFilter(); lp2.type='lowpass'; lp2.frequency.value=600;
-    const g2 = c.createGain(); g2.gain.value = 0;
-    s.connect(bp); bp.connect(lp); lp.connect(g); g.connect(pan);
-    s2.connect(lp2); lp2.connect(g2); g2.connect(pan);
-    pan.connect(dest);
-    const start = t;
-    g.gain.setValueAtTime(0,t); g2.gain.setValueAtTime(0,t);
-    const base = R(1300,2000), loud = R(0.35,0.55);
-    const lines = 1 + Math.floor(Math.random()*3);
-    for (let l=0;l<lines;l++){
-      const chars = 4 + Math.floor(Math.random()*12);
-      for (let ch=0; ch<chars; ch++){
-        const strokes = 1 + Math.floor(Math.random()*4);
-        for (let k=0;k<strokes;k++){
-          const dur = R(0.07,0.26), v = R(0.6,1);
-          // ペン先が触れる → 動く（速いほど高く大きく） → 止まって離れる
-          g.gain.setTargetAtTime(loud*v, t, 0.012);
-          g2.gain.setTargetAtTime(loud*v*0.4, t, 0.015);
-          bp.frequency.setTargetAtTime(base*R(1.0,1.5)*v, t, 0.02);
-          const mid = t+dur*R(0.4,0.7);
-          bp.frequency.setTargetAtTime(base*R(0.75,1.0), mid, 0.04);
-          g.gain.setTargetAtTime(loud*v*R(0.5,0.8), mid, 0.03);
-          t += dur;
-          g.gain.setTargetAtTime(0, t, 0.012);
-          g2.gain.setTargetAtTime(0, t, 0.015);
-          t += R(0.03,0.09); // ペンを持ち上げて次の画へ
-        }
-        t += R(0.05,0.16);
-        if (Math.random()<0.12) t += R(0.2,0.5); // 単語の切れ目
-      }
-      if (Math.random()<0.5){ noiseHit(c,pan,t,'bandpass',R(2000,2600),2,0.12,0.002,0.02); t+=0.05; } // 句点のトン
-      t += R(0.6,1.6); // 改行・見直し
-    }
-    s.start(start, R(0,1)); s2.start(start, R(0,4));
-    s.stop(t+0.3); s2.stop(t+0.3);
-    return t;
-  }
-  // 紙をめくる（低め・ゆっくり）
-  function pageTurn(c, dest, t){
-    const s = c.createBufferSource(); s.buffer=white;
-    const bp = c.createBiquadFilter(); bp.type='bandpass'; bp.frequency.setValueAtTime(R(1500,2200),t); bp.frequency.linearRampToValueAtTime(R(2800,3800),t+0.35); bp.Q.value=0.7;
-    const g = c.createGain(); g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(0.18,t+0.12); g.gain.linearRampToValueAtTime(0.06,t+0.3); g.gain.linearRampToValueAtTime(0,t+0.55);
-    const pan = seatPanner(c, PEN_SEAT);
-    s.connect(bp); bp.connect(g); g.connect(pan); pan.connect(dest);
-    s.start(t, R(0,1), 0.6);
-  }
-
-  // 音量スライダー（Gain）の後ろから部屋の響きへ送る
-  function setupGraph(c){
-    white = noiseBuf(c,2,false); brown = noiseBuf(c,6,true);
-    const m = c.createGain(); m.connect(c.destination);
-    reverb = makeReverb(c); const wet = c.createGain(); wet.gain.value = 0.3; reverb.connect(wet); wet.connect(m);
-    const h = c.createGain(), ty = c.createGain(), pa = c.createGain(), tyW = c.createGain(), paW = c.createGain();
-    h.connect(m); ty.connect(m); pa.connect(m); tyW.connect(reverb); paW.connect(reverb);
-    return {m,h,ty,pa,tyW,paW};
-  }
-
-  // 先読みスケジューラ：次の予定時刻が近づいたら続きを予約する
-  function loop(fn){
-    let next = ctx.currentTime + R(0.5,4);
+  // 先読みスケジューラ
+  function loop(fn, firstDelay){
+    let next = ctx.currentTime + firstDelay;
     const tick = ()=>{
       if (!ctx) return;
-      if (next - ctx.currentTime < 2) next = fn(Math.max(next, ctx.currentTime+0.05));
+      if (next - ctx.currentTime < 3) next = fn(Math.max(next, ctx.currentTime+0.05));
       setTimeout(tick, 500);
     };
     tick();
   }
+  async function load(){
+    const entries = await Promise.all(Object.entries(FILES).map(async ([k,url])=>{
+      const r = await fetch(url); if (!r.ok) throw new Error(url);
+      return [k, await ctx.decodeAudioData(await r.arrayBuffer())];
+    }));
+    entries.forEach(([k,b])=>bufs[k]=b);
+  }
+  function startLayers(){
+    const reverb = makeReverb(ctx); const wet = ctx.createGain(); wet.gain.value=0.25; reverb.connect(wet); wet.connect(master);
+    const outNear = seatOut(ctx, SEATS.typeNear, typeG, reverb, 0.08);
+    const outFar  = seatOut(ctx, SEATS.typeFar,  typeG, reverb, 0.3);
+    const outPen  = seatOut(ctx, SEATS.pen,      penG,  reverb, 0.1);
+    const outMouse= seatOut(ctx, SEATS.mouse,    mouseG,reverb, 0.08);
+    const T = bufs.typing, P = bufs.pen, M = bufs.mouse;
+    // タイピング：向かいの人。録音のランダムな位置から15〜45秒流し、たまに手を止める
+    loop(t=>{
+      const dur = Math.min(R(15,45), T.duration-1);
+      playSegment(ctx, T, outNear, t, R(0, T.duration-dur), dur, 2, TRIM.typing);
+      return t + dur - 2 + (Math.random()<0.3 ? R(3,12) : 0);  // 2秒重ねてつなぐ／ときどき休憩
+    }, 0.2);
+    // タイピング：離れた席の人。小さく・こもって、別の位置から
+    loop(t=>{
+      if (Math.random()<0.35) return t + R(8,30);
+      const dur = Math.min(R(10,35), T.duration-1);
+      playSegment(ctx, T, outFar, t, R(0, T.duration-dur), dur, 2.5, TRIM.typing*0.7);
+      return t + dur + R(2,15);
+    }, R(5,15));
+    // ペン：左斜め前の人。書いては止まる
+    loop(t=>{
+      const dur = Math.min(R(6,22), P.duration-1);
+      playSegment(ctx, P, outPen, t, R(0, P.duration-dur), dur, 0.6, TRIM.pen);
+      return t + dur + R(4,25);
+    }, R(2,8));
+    // マウス：向かいの人がときどき操作する
+    loop(t=>{
+      const n = 1 + Math.floor(Math.random()*3);
+      for (let i=0;i<n;i++){
+        const [s,e] = MOUSE_EVENTS[Math.floor(Math.random()*MOUSE_EVENTS.length)];
+        playSegment(ctx, M, outMouse, t, s, e-s, 0.02, TRIM.mouse);
+        t += (e-s) + R(0.3,1.5);
+      }
+      return t + R(8,45);
+    }, R(5,20));
+  }
   function start(){
     if (ctx) return;
     ctx = new (window.AudioContext||window.webkitAudioContext)();
-    const gph = setupGraph(ctx); master=gph.m; hvacG=gph.h; typeG=gph.ty; paperG=gph.pa; typeW=gph.tyW; paperW=gph.paW;
-    // 空調
-    const src = ctx.createBufferSource(); src.buffer = noiseBuf(ctx,8,true); src.loop=true;
+    const comp = ctx.createDynamicsCompressor(); comp.threshold.value=-6; comp.ratio.value=8; comp.connect(ctx.destination);
+    master = ctx.createGain(); master.connect(comp);
+    hvacG = ctx.createGain(); typeG = ctx.createGain(); penG = ctx.createGain(); mouseG = ctx.createGain();
+    [hvacG,typeG,penG,mouseG].forEach(g=>g.connect(master));
+    // 空調（合成）
+    const src = ctx.createBufferSource(); src.buffer = noiseBuf(ctx,8); src.loop=true;
     const lp = ctx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=380;
     src.connect(lp); lp.connect(hvacG); src.start();
-    // 周りの3人
-    for (let p=0;p<3;p++){
-      const kb = makeTypist(ctx, typeG, typeW, p);
-      loop(t=>{
-        if (Math.random()<0.25) return t + R(3,15); // 手を止めている時間
-        return typeSentence(ctx, kb, t) + R(0.4,3);
-      });
-    }
-    loop(t=>{
-      if (Math.random()<0.15){ pageTurn(ctx, paperG, t); return t + R(2,6); }
-      return writeSession(ctx, paperG, paperW, t) + R(4,20);
-    });
     apply();
+    loading = load().then(startLayers).catch(e=>{ toast('録音素材を読み込めませんでした'); });
   }
   function apply(){
     if (!ctx) return;
     const k = soloMute?0:1;
     hvacG.gain.value  = (S.amb.hvac/100)*0.35*k;
-    typeG.gain.value  = (S.amb.type/100)*1.8*k;
-    paperG.gain.value = (S.amb.paper/100)*0.6*k;
-    typeW.gain.value = typeG.gain.value; paperW.gain.value = paperG.gain.value;
+    typeG.gain.value  = (S.amb.type/100)*k;
+    penG.gain.value   = (S.amb.paper/100)*k;
+    mouseG.gain.value = ((S.amb.mouse??30)/100)*k;
   }
-  return { start, apply, setSoloMute:v=>{ soloMute=v; apply(); },
-    _test:{ setupGraph, makeTypist, typeSentence, writeSession, pageTurn } };
+  return { start, apply, setSoloMute:v=>{ soloMute=v; apply(); } };
 })();
 function bumpAmbience(){
   let changed=false;
@@ -802,8 +715,9 @@ function syncAmbSliders(){
   document.getElementById('ambHvac').value=S.amb.hvac;
   document.getElementById('ambType').value=S.amb.type;
   document.getElementById('ambPaper').value=S.amb.paper;
+  document.getElementById('ambMouse').value=S.amb.mouse??30;
 }
-[['ambHvac','hvac'],['ambType','type'],['ambPaper','paper']].forEach(([id,k])=>{
+[['ambHvac','hvac'],['ambType','type'],['ambPaper','paper'],['ambMouse','mouse']].forEach(([id,k])=>{
   document.getElementById(id).oninput = e=>{ S.amb[k]=+e.target.value; amb.apply(); save(); };
 });
 
