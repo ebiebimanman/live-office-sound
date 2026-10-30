@@ -61,10 +61,10 @@
 </head>
 <body>
 <header>
-  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v16</span>
+  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v17</span>
   <span class="live"><span class="dot" id="liveDot"></span><span id="liveText">停止中</span></span>
   <span class="spacer"></span>
-  <button id="silenceBtn" title="このタブの音と映像を共有すると、無音の配信の自動除外と、動画の動きに合わせた効果音が使えます">🔇 無音チェック・動き連動：オフ</button>
+  <button id="silenceBtn" title="このタブの映像を共有すると、動画の動きに合わせて環境音が鳴ります">🎬 動き連動：オフ</button>
   <span class="muted">音楽・雨・無音なら <span class="kbd">1</span><span class="kbd">2</span><span class="kbd">3</span>（その枠を除外）</span>
 </header>
 
@@ -416,39 +416,29 @@ function applyVolumes(){
   amb.setSoloMute(solo>=0);
 }
 
-/* ========== 無音チェック（タブ音声を測る） ========== */
+/* ========== 画面共有（動き連動用）。旧・無音チェックの関数は呼ばれないまま残っている ========== */
 let checkIdx = -1, capStream = null, capCtx = null, capAnalyser = null, checkChain = Promise.resolve();
 const checkedOk = new Set(); // このセッションで音ありと確認した動画
-function capActive(){ return !!(capStream && capStream.getAudioTracks().some(t=>t.readyState==='live')); }
+function capActive(){ return !!(capStream && capStream.getVideoTracks().some(t=>t.readyState==='live')); }
 function updateSilenceBtn(){
   const b = document.getElementById('silenceBtn');
-  b.textContent = capActive() ? '🔊 無音チェック・動き連動：オン' : '🔇 無音チェック・動き連動：オフ';
+  b.textContent = capActive() ? '🎬 動き連動：オン' : '🎬 動き連動：オフ';
   b.classList.toggle('on', capActive());
 }
 async function enableSilenceCheck(){
   if (capActive()) return true;
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia){ toast('このブラウザは無音チェックに対応していません（PCのChrome/Edgeで使えます）'); return false; }
-  toast('共有画面で「このタブ」を選び、「タブの音声も共有する」をオンにしてください');
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia){ toast('このブラウザは動き連動に対応していません（PCのChrome/Edgeで使えます）'); return false; }
+  toast('共有画面で「このタブ」を選んでください（音声の共有は不要です）');
   try{
     capStream = await navigator.mediaDevices.getDisplayMedia({
-      video:{width:{ideal:480,max:640},frameRate:{ideal:3,max:4}}, audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false,suppressLocalAudioPlayback:false},
-      preferCurrentTab:true, selfBrowserSurface:'include', systemAudio:'exclude', surfaceSwitching:'exclude'
+      video:{width:{ideal:480,max:640},frameRate:{ideal:3,max:4}}, audio:false,
+      preferCurrentTab:true, selfBrowserSurface:'include', surfaceSwitching:'exclude'
     });
-  }catch(e){ toast('無音チェックはオフのままです'); updateSilenceBtn(); return false; }
+  }catch(e){ toast('動き連動はオフのままです'); updateSilenceBtn(); return false; }
   startMotion(capStream.getVideoTracks()[0]);
-  if (!capStream.getAudioTracks().length){
-    capStream.getTracks().forEach(t=>t.stop()); capStream=null;
-    toast('音声が共有されていません。「タブの音声も共有する」をオンにしてやり直してください');
-    updateSilenceBtn(); return false;
-  }
-  capCtx = new (window.AudioContext||window.webkitAudioContext)();
-  const src = capCtx.createMediaStreamSource(new MediaStream(capStream.getAudioTracks()));
-  capAnalyser = capCtx.createAnalyser(); capAnalyser.fftSize = 2048;
-  src.connect(capAnalyser); // スピーカーには繋がない
-  capStream.getAudioTracks()[0].addEventListener('ended', ()=>{ updateSilenceBtn(); toast('無音チェックがオフになりました'); });
+  capStream.getVideoTracks()[0].addEventListener('ended', ()=>{ updateSilenceBtn(); amb.setActivity(null); toast('動き連動がオフになりました'); });
   updateSilenceBtn();
-  toast('無音チェックがオンになりました');
-  slots.forEach(s=>{ if (s.kind==='sound' && s.item) queueCheck(s); });
+  toast('動き連動がオンになりました');
   return true;
 }
 /* ========== 動画の動き検出（共有中のタブ映像からフレーム差分を取る） ========== */
@@ -539,7 +529,7 @@ async function checkSlot(s, videoId){
   if (s.item && s.item.videoId===videoId) s.q('title').textContent = s0;
   return peak >= SILENT_RMS;
 }
-function queueCheck(s){
+function queueCheck(s){ return; // 無音チェックは廃止（考え中の静かな時間まで除外してしまうため）
   if (!capActive() || s.kind!=='sound' || !s.item) return;
   const it = s.item;
   if (checkedOk.has(it.videoId)) return;
@@ -607,7 +597,7 @@ setInterval(()=>{
     const p = S.favorites[ch] ? 100 : Math.min(100, S.listened[ch]/need*100);
     s.q('prog').style.width = p+'%';
     if (!S.favorites[ch] && S.listened[ch] >= need && !s.favChecking){
-      if (!capActive()) { favSlot(s,false); return; }
+      favSlot(s,false); return; // 無音チェックは廃止
       s.favChecking = true; const vid = s.item.videoId;
       checkChain = checkChain.then(async ()=>{
         const ok = await checkSlot(s, vid);
