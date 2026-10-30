@@ -61,7 +61,7 @@
 </head>
 <body>
 <header>
-  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v13</span>
+  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v14</span>
   <span class="live"><span class="dot" id="liveDot"></span><span id="liveText">停止中</span></span>
   <span class="spacer"></span>
   <button id="silenceBtn" title="このタブの音と映像を共有すると、無音の配信の自動除外と、動画の動きに合わせた効果音が使えます">🔇 無音チェック・動き連動：オフ</button>
@@ -635,14 +635,14 @@ const amb = (()=>{
   /* 録音素材（すべて Freesound の CC0） */
   const FILES = { typing:'sound/typing.mp3', pen:'sound/pen.mp3', mouse:'sound/mouse.mp3' };
   // 素材ごとの音量のならし（元の録音レベルの差を埋める）
-  const TRIM = { typing:1.9, pen:1.0, mouse:2.2 };
+  const TRIM = { typing:1.9, pen:0.35, mouse:2.2 };  // ペンは接写録音で大きく耳につくため約-9dB
   // マウス録音のうち、音が鳴っている区間（秒）
-  const MOUSE_EVENTS = [[0,0.65],[2.5,2.8],[4.72,5.25],[6.62,7.0],[8.72,9.1],[10.62,12.6],[12.6,15.55]];
+  const MOUSE_EVENTS = [[0,0.65,1],[2.5,2.8,1],[4.72,5.25,1],[6.62,7.0,1],[8.72,9.1,1],[10.62,12.6,0.35],[12.6,15.55,0.5]]; // [開始,終了,音量]（ホイール部分は大きいので抑える）
   // 座席：あなたは原点で前（-z）を向いて座っている。机の高さは少し下（y=-0.4）
   const SEATS = {
     typeNear: {x: 0.45, z:-1.6, lp:12000},  // 向かいの席
     typeFar:  {x: 1.8,  z:-4.5, lp:3500 },  // 右前の離れた席
-    pen:      {x:-0.7,  z:-1.4, lp:12000},  // 左斜め前
+    pen:      {x:-0.8,  z:-2.0, lp:6000, hp:180},  // 左斜め前。机のドンという低音と、高いカリカリを少し抑える
     mouse:    {x: 0.45, z:-1.6, lp:12000},  // 向かいの席の人のマウス
   };
   let ctx, master, hvacG, typeG, penG, mouseG, actG=null, actFarG=null, actPenG=null, actMouseG=null, outs=null, soloMute=false, bufs={}, loading=null;
@@ -663,11 +663,18 @@ const amb = (()=>{
   function seatOut(c, seat, bus, reverb, wet){
     const mono = c.createGain(); mono.channelCount=1; mono.channelCountMode='explicit'; mono.channelInterpretation='speakers';
     const lp = c.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=seat.lp;
+    let head = lp;
+    if (seat.hp){ const hp = c.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=seat.hp; hp.connect(lp); head = hp; }
     const pn = c.createPanner(); pn.panningModel='HRTF'; pn.distanceModel='inverse'; pn.refDistance=1.2; pn.rolloffFactor=1;
     if (pn.positionX){ pn.positionX.value=seat.x; pn.positionY.value=-0.4; pn.positionZ.value=seat.z; } else pn.setPosition(seat.x,-0.4,seat.z);
-    mono.connect(lp); lp.connect(pn); pn.connect(bus);
+    mono.connect(head); lp.connect(pn); pn.connect(bus);
     const ws = c.createGain(); ws.gain.value = wet; lp.connect(ws); ws.connect(reverb);
     return mono;
+  }
+  // タイピング録音の再生位置（81.5〜82.1秒の大きな物音を含まない位置を選ぶ）
+  function typingOffset(T, dur){
+    for (let i=0;i<20;i++){ const o = R(0, T.duration-dur); if (o+dur < 81.5 || o > 82.1) return o; }
+    return 0;
   }
   // 録音の一部分をフェードつきで鳴らす
   function playSegment(c, buf, out, t, offset, dur, fade, gain){
@@ -712,14 +719,14 @@ const amb = (()=>{
     // タイピング：向かいの人。録音のランダムな位置から15〜45秒流し、たまに手を止める
     loop(t=>{
       const dur = Math.min(R(15,45), T.duration-1);
-      playSegment(ctx, T, outNear, t, R(0, T.duration-dur), dur, 2, TRIM.typing);
+      playSegment(ctx, T, outNear, t, typingOffset(T, dur), dur, 2, TRIM.typing);
       return t + dur - 2 + (Math.random()<0.3 ? R(3,12) : 0);  // 2秒重ねてつなぐ／ときどき休憩
     }, 0.2);
     // タイピング：離れた席の人。小さく・こもって、別の位置から
     loop(t=>{
       if (Math.random()<0.35) return t + R(8,30);
       const dur = Math.min(R(10,35), T.duration-1);
-      playSegment(ctx, T, outFar, t, R(0, T.duration-dur), dur, 2.5, TRIM.typing*0.7);
+      playSegment(ctx, T, outFar, t, typingOffset(T, dur), dur, 2.5, TRIM.typing*0.7);
       return t + dur + R(2,15);
     }, R(5,15));
     // ペン：左斜め前の人。書いては止まる
@@ -757,8 +764,8 @@ const amb = (()=>{
   function mouseBurst(t){
     const n = 1 + Math.floor(Math.random()*3);
     for (let i=0;i<n;i++){
-      const [s,e] = MOUSE_EVENTS[Math.floor(Math.random()*MOUSE_EVENTS.length)];
-      playSegment(ctx, bufs.mouse, outs.mouse, t, s, e-s, 0.02, TRIM.mouse);
+      const [s,e,v] = MOUSE_EVENTS[Math.floor(Math.random()*MOUSE_EVENTS.length)];
+      playSegment(ctx, bufs.mouse, outs.mouse, t, s, e-s, 0.02, TRIM.mouse*v);
       t += (e-s) + R(0.3,1.5);
     }
     return t;
