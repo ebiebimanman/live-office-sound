@@ -61,7 +61,7 @@
 </head>
 <body>
 <header>
-  <h1>Virtual Office</h1>
+  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v4</span>
   <span class="live"><span class="dot" id="liveDot"></span><span id="liveText">停止中</span></span>
   <span class="spacer"></span>
   <span class="muted">音楽・雨が聞こえたら <span class="kbd">1</span><span class="kbd">2</span><span class="kbd">3</span>（その枠を除外）</span>
@@ -164,6 +164,8 @@ function excludedBy(item){
   const t = stripAllow(item.title+' '+item.channelTitle+' '+(item.desc||'').slice(0,500));
   return (S.excludeWords||[]).map(normWord).filter(Boolean).find(w=>t.includes(w)) || null;
 }
+// キーワードに関係なく弾くもの：音楽カテゴリ（ID 10）と子ども向けコンテンツ
+function badCategory(item){ return item.categoryId==='10' || item.kids===true; }
 function lacksRequired(item){
   const req = (S.requireWords||[]).map(normWord).filter(Boolean);
   if (!req.length) return false;
@@ -185,6 +187,7 @@ const defaults = () => ({
 let S = defaults();
 try { const raw = localStorage.getItem(STORE_KEY); if (raw) S = Object.assign(defaults(), JSON.parse(raw)); } catch(e){}
 if (!S.migratedV2){ ['english','英語','listening','リスニング','podcast','ニュース','news'].forEach(w=>{ if(!S.excludeWords.includes(w)) S.excludeWords.unshift(w); }); S.migratedV2=true; }
+if (S.cache && S.cache.v!==4) S.cache = null; // 古い形式の候補キャッシュは捨てる
 function save(){ try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch(e){} }
 
 /* ========== スコアリング ========== */
@@ -276,10 +279,10 @@ async function fetchCandidates(force){
   if (extra.size) items = items.concat(await details([...extra]));
   // 登録チャンネルの最新配信IDを更新
   items.forEach(i=>{ if (S.favorites[i.channelId]) S.favorites[i.channelId].lastVideoId = i.videoId; });
-  if (items.length) S.cache = {at:Date.now(), items};  // 0件はキャッシュしない
+  if (items.length) S.cache = {at:Date.now(), items, v:4};  // 0件はキャッシュしない
   save();
   document.getElementById('quotaNote').textContent =
-    `検索ヒット ${hitCount}件 → 再生できるライブ ${items.length}件 → 必須・除外ワードを通過 ${items.filter(i=>!excludedBy(i)&&!lacksRequired(i)).length}件（このタブで約${quotaUsed}ユニット使用）`;
+    `検索ヒット ${hitCount}件 → 再生できるライブ ${items.length}件 → 必須・除外ワードを通過 ${items.filter(i=>!badCategory(i)&&!excludedBy(i)&&!lacksRequired(i)).length}件（このタブで約${quotaUsed}ユニット使用）`;
   return items;
 }
 async function details(ids){
@@ -291,7 +294,8 @@ async function details(ids){
       if (v.status && v.status.embeddable===false) return;
       out.push({videoId:v.id, channelId:v.snippet.channelId, channelTitle:v.snippet.channelTitle,
         title:v.snippet.title, desc:v.snippet.description||'',
-        viewers:+((v.liveStreamingDetails||{}).concurrentViewers||0)});
+        viewers:+((v.liveStreamingDetails||{}).concurrentViewers||0),
+        categoryId:v.snippet.categoryId||'', kids:!!(v.status&&v.status.madeForKids)});
     });
   }
   return out;
@@ -382,7 +386,7 @@ async function fillSlot(s){
     // 存在枠：除外チャンネル（BGMつき）もOK。視聴者が多い順
     pick = candidates.filter(usable).sort((a,b)=>b.viewers-a.viewers)[0];
   } else {
-    pick = candidates.filter(c=>usable(c) && !S.blocked[c.channelId] && (S.favorites[c.channelId] || (!excludedBy(c) && !lacksRequired(c)))).sort((a,b)=>score(b)-score(a))[0];
+    pick = candidates.filter(c=>usable(c) && !S.blocked[c.channelId] && (S.favorites[c.channelId] || (!badCategory(c) && !excludedBy(c) && !lacksRequired(c)))).sort((a,b)=>score(b)-score(a))[0];
   }
   if (!pick && S.cache && Date.now()-S.cache.at > 10*60*1000){
     try{ candidates = await fetchCandidates(true); return fillSlot(s); }catch(e){ toast(e.message); }
