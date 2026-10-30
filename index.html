@@ -100,6 +100,10 @@
         </div>
         <div class="muted" style="margin-top:8px">検索ワード（1行に1つ）</div>
         <textarea id="queries" rows="6" style="width:100%"></textarea>
+        <div class="muted" style="margin-top:8px">除外ワード（1行に1つ。タイトル・チャンネル名・説明文に含まれていたら流さない）</div>
+        <textarea id="excludeWords" rows="6" style="width:100%"></textarea>
+        <div class="muted" style="margin-top:8px">例外ワード（これを含む部分は除外判定に使わない。例：「BGMなし」の「BGM」で除外されないように）</div>
+        <textarea id="allowWords" rows="3" style="width:100%"></textarea>
         <div class="row" style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
           <button id="saveSettings">保存して反映</button>
           <button id="refreshBtn">候補を今すぐ再検索</button>
@@ -145,8 +149,26 @@
 /* ========== 保存データ ========== */
 const STORE_KEY = 'virtualOffice.v1';
 const DEFAULT_QUERIES = ['作業配信','勉強配信','study with me live','work with me live','作業用 ライブ','勉強 ライブ 一緒に'];
+const DEFAULT_EXCLUDE = ['bgm','music','音楽','lofi','lo-fi','lo fi','piano','ピアノ','jazz','ジャズ','rain','雨','chill','beats','radio','ラジオ','歌','song','playlist','プレイリスト','cafe','カフェ','焚き火','fireplace'];
+const DEFAULT_ALLOW = ['bgmなし','bgm無し','bgmなしで','no bgm','no music','without music','音楽なし','音楽無し','bgm off','bgmオフ'];
+function normWord(w){ return (w||'').toLowerCase().normalize('NFKC').trim(); }
+function stripAllow(text){
+  let t = normWord(text);
+  for (const a of (S.allowWords||[]).map(normWord).filter(Boolean)) t = t.split(a).join(' ');
+  return t;
+}
+function excludedBy(item){
+  const t = stripAllow(item.title+' '+item.channelTitle+' '+(item.desc||'').slice(0,500));
+  return (S.excludeWords||[]).map(normWord).filter(Boolean).find(w=>t.includes(w)) || null;
+}
+// 検索時に「-ワード」で除外できるもの（例外ワードと衝突しないもの・空白を含まないもの）
+function searchNegatives(){
+  const allow = (S.allowWords||[]).map(normWord);
+  return (S.excludeWords||[]).map(normWord).filter(w=>w && !/\s/.test(w) && !allow.some(a=>a.includes(w))).slice(0,10);
+}
 const defaults = () => ({
   apiKey:'', slotCount:2, autoFavMin:15, presence:false, queries:DEFAULT_QUERIES.slice(),
+  excludeWords:DEFAULT_EXCLUDE.slice(), allowWords:DEFAULT_ALLOW.slice(),
   favorites:{}, blocked:{}, tokenW:{}, listened:{}, volumes:[60,40,30],
   amb:{hvac:15,type:0,paper:0}, cache:null
 });
@@ -216,10 +238,11 @@ async function fetchCandidates(force){
   const ids = new Set();
   const qs = S.queries.filter(Boolean);
   let firstErr = null, okCount = 0;
+  const neg = searchNegatives().map(w=>' -'+(/[^a-z0-9\-]/.test(w)?'"'+w+'"':w)).join('');
   // 1) 広く検索（eventType=live で「今ライブ中」の配信だけに絞り込み）
   for (const q of qs){
     try{
-      const j = await api('search',{part:'snippet',type:'video',eventType:'live',maxResults:50,q},100);
+      const j = await api('search',{part:'snippet',type:'video',eventType:'live',maxResults:50,q:q+neg},100);
       (j.items||[]).forEach(it=>it.id&&it.id.videoId&&ids.add(it.id.videoId));
       okCount++;
     }catch(e){ firstErr = firstErr||e; if (/無料枠|APIキー|制限/.test(e.message)) throw e; }
@@ -245,7 +268,7 @@ async function fetchCandidates(force){
   if (items.length) S.cache = {at:Date.now(), items};  // 0件はキャッシュしない
   save();
   document.getElementById('quotaNote').textContent =
-    `検索ヒット ${hitCount}件 → 再生できるライブ ${items.length}件（このタブで約${quotaUsed}ユニット使用）`;
+    `検索ヒット ${hitCount}件 → 再生できるライブ ${items.length}件 → 除外ワードを通過 ${items.filter(i=>!excludedBy(i)).length}件（このタブで約${quotaUsed}ユニット使用）`;
   return items;
 }
 async function details(ids){
@@ -348,7 +371,7 @@ async function fillSlot(s){
     // 存在枠：除外チャンネル（BGMつき）もOK。視聴者が多い順
     pick = candidates.filter(usable).sort((a,b)=>b.viewers-a.viewers)[0];
   } else {
-    pick = candidates.filter(c=>usable(c) && !S.blocked[c.channelId]).sort((a,b)=>score(b)-score(a))[0];
+    pick = candidates.filter(c=>usable(c) && !S.blocked[c.channelId] && (S.favorites[c.channelId] || !excludedBy(c))).sort((a,b)=>score(b)-score(a))[0];
   }
   if (!pick && S.cache && Date.now()-S.cache.at > 10*60*1000){
     try{ candidates = await fetchCandidates(true); return fillSlot(s); }catch(e){ toast(e.message); }
@@ -547,6 +570,8 @@ function loadSettingsUI(){
   document.getElementById('autoFavMin').value = S.autoFavMin;
   document.getElementById('presence').checked = S.presence;
   document.getElementById('queries').value = S.queries.join('\n');
+  document.getElementById('excludeWords').value = S.excludeWords.join('\n');
+  document.getElementById('allowWords').value = S.allowWords.join('\n');
   document.getElementById('originHint').textContent = location.origin + '/*';
   syncAmbSliders(); renderLists();
 }
@@ -560,7 +585,11 @@ document.getElementById('saveSettings').onclick = async ()=>{
   const qs = document.getElementById('queries').value.split('\n').map(x=>x.trim()).filter(Boolean);
   const qChanged = qs.join('|')!==S.queries.join('|');
   S.queries = qs.length?qs:DEFAULT_QUERIES.slice();
-  if (keyChanged||qChanged) S.cache = null;
+  const lines = id=>document.getElementById(id).value.split('\n').map(x=>x.trim()).filter(Boolean);
+  const ex = lines('excludeWords'), al = lines('allowWords');
+  const exChanged = ex.join('|')!==S.excludeWords.join('|') || al.join('|')!==S.allowWords.join('|');
+  S.excludeWords = ex; S.allowWords = al;
+  if (keyChanged||qChanged||exChanged) S.cache = null;
   save(); toast('保存しました');
   if (started){
     buildSlots();
