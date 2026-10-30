@@ -61,7 +61,7 @@
 </head>
 <body>
 <header>
-  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v14</span>
+  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v15</span>
   <span class="live"><span class="dot" id="liveDot"></span><span id="liveText">停止中</span></span>
   <span class="spacer"></span>
   <button id="silenceBtn" title="このタブの音と映像を共有すると、無音の配信の自動除外と、動画の動きに合わせた効果音が使えます">🔇 無音チェック・動き連動：オフ</button>
@@ -84,7 +84,7 @@
       <label>ペンで書く音<input type="range" min="0" max="100" id="ambPaper"></label>
       <label>マウスの音<input type="range" min="0" max="100" id="ambMouse"></label>
     </div>
-    <div class="muted" style="margin-top:6px">ライブの候補が見つからないときは自動で少し上がります。録音素材：<a href="https://freesound.org/people/SduggySounds/sounds/725718/" target="_blank" rel="noopener" style="color:inherit">SduggySounds</a>／<a href="https://freesound.org/people/black_trillium/sounds/397282/" target="_blank" rel="noopener" style="color:inherit">black_trillium</a>／<a href="https://freesound.org/people/mrfineppine/sounds/244651/" target="_blank" rel="noopener" style="color:inherit">mrfineppine</a>（Freesound, CC0）</div>
+    <div class="muted" style="margin-top:6px">録音素材：<a href="https://freesound.org/people/SduggySounds/sounds/725718/" target="_blank" rel="noopener" style="color:inherit">SduggySounds</a>／<a href="https://freesound.org/people/black_trillium/sounds/397282/" target="_blank" rel="noopener" style="color:inherit">black_trillium</a>／<a href="https://freesound.org/people/mrfineppine/sounds/244651/" target="_blank" rel="noopener" style="color:inherit">mrfineppine</a>（Freesound, CC0）</div>
   </section>
 
   <details id="settingsBox">
@@ -398,7 +398,7 @@ async function fillSlot(s){
   }
   if (!pick){
     const why = lastErr ? `<br><small style="color:var(--warn)">${lastErr.replace(/</g,'&lt;')}</small>` : '';
-    showEmpty(s, (s.kind==='presence' ? '流せるライブがありません' : '今は条件に合うライブが見つかりません。<br>オフィスの環境音を上げています。') + why);
+    showEmpty(s, (s.kind==='presence' ? '流せるライブがありません' : '今は条件に合うライブが見つかりません。') + why);
     if (s.kind==='sound') bumpAmbience();
     updateLive(); return;
   }
@@ -802,12 +802,7 @@ const amb = (()=>{
   }
   return { start, apply, setActivity, setSoloMute:v=>{ soloMute=v; apply(); } };
 })();
-function bumpAmbience(){
-  let changed=false;
-  if (S.amb.type<35){ S.amb.type=35; changed=true; }
-  if (S.amb.paper<25){ S.amb.paper=25; changed=true; }
-  if (changed){ syncAmbSliders(); amb.apply(); save(); }
-}
+function bumpAmbience(){ /* 以前は候補がないとき音量を自動で上げていたが、スライダーの設定を上書きしてしまうためやめた */ }
 function syncAmbSliders(){
   document.getElementById('ambHvac').value=S.amb.hvac;
   document.getElementById('ambType').value=S.amb.type;
