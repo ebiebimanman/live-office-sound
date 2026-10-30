@@ -61,7 +61,7 @@
 </head>
 <body>
 <header>
-  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v11</span>
+  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v12</span>
   <span class="live"><span class="dot" id="liveDot"></span><span id="liveText">停止中</span></span>
   <span class="spacer"></span>
   <button id="silenceBtn" title="このタブの音と映像を共有すると、無音の配信の自動除外と、動画の動きに合わせた効果音が使えます">🔇 無音チェック・動き連動：オフ</button>
@@ -765,32 +765,33 @@ const amb = (()=>{
   }
   // 動きの「ひとまとまり」ごとに、どの音が反応するかをランダムに決める
   const FOCUS_WEIGHTS = [['typing',0.45],['pen',0.35],['mouse',0.2]];
-  let focus = null, focusAt = 0, focusLen = 0, lastA = 0;
+  let focus = null, focusAt = 0, focusLen = 0, lastA = 0, moving = false;
   function pickFocus(now){
     let r = Math.random(), f = 'typing';
     for (const [k,w] of FOCUS_WEIGHTS){ if ((r-=w) < 0){ f = k; break; } }
     if (f===focus && Math.random()<0.5) f = FOCUS_WEIGHTS[Math.floor(Math.random()*3)][0];
-    focus = f; focusAt = now; focusLen = R(12,35);
+    focus = f; focusAt = now; focusLen = f==='mouse' ? R(6,15) : R(12,35);
     // 反応した瞬間にその音を鳴らし始める
     if (f==='pen') { const P=bufs.pen, dur=Math.min(R(5,14),P.duration-1); playSegment(ctx, P, outs.pen, now+0.05, R(0,P.duration-dur), dur, 0.3, TRIM.pen); }
     if (f==='mouse') mouseBurst(now+0.05);
   }
-  // 動画の動き（0〜1、null は連動なし）に合わせて音の強さを変える
+  // 動画の動き（0〜1、null は連動なし）に合わせて、音を「鳴らす／止める」だけ切り替える（大きさは変えない）
   function setActivity(a){
     if (!ctx || !actG) return;
     const now = ctx.currentTime;
-    const set = (g,v,up)=>g.gain.setTargetAtTime(v, now, up && v>g.gain.value ? 0.25 : 1.2);
-    if (a==null){ focus=null; [actG,actFarG,actPenG,actMouseG].forEach(g=>set(g,1)); lastA=0; return; }
-    // 動き出した瞬間、または同じ動きが長く続いたら、反応する音を選び直す
-    if (a>0.35 && (lastA<0.2 || now-focusAt>focusLen)) pickFocus(now);
-    // 大きく動いた瞬間には、選ばれていない音もたまに鳴る
-    if (a-lastA>0.4 && Math.random()<0.3){ if (Math.random()<0.5) mouseBurst(now+0.1); }
+    const sw = (g,on)=>g.gain.setTargetAtTime(on?1:0, now, on?0.05:0.3); // つなぎ目のプツッを防ぐ短いフェードだけ
+    if (a==null){ focus=null; moving=false; [actG,actFarG,actPenG,actMouseG].forEach(g=>sw(g,true)); lastA=0; return; }
+    // 動いている／止まっているの判定（ちらつき防止に、入りと切れのしきい値を分ける）
+    const wasMoving = moving;
+    if (!moving && a>0.35) moving = true;
+    else if (moving && a<0.2) moving = false;
+    // 動き出した瞬間、または同じ動きが長く続いたら、鳴らす音を選び直す
+    if (moving && (!wasMoving || now-focusAt>focusLen)) pickFocus(now);
     lastA = a;
-    const lvl = (k)=> k===focus ? 0.1 + 0.9*a : 0.1 + 0.3*a;   // 選ばれた音は大きく連動、ほかは控えめ
-    set(actG, lvl('typing'), true);
-    set(actPenG, lvl('pen'), true);
-    set(actMouseG, Math.max(0.35, lvl('mouse')), true);
-    set(actFarG, 0.5 + 0.5*Math.min(1,a*1.5));
+    sw(actG,     moving && focus==='typing');
+    sw(actFarG,  moving && focus==='typing');
+    sw(actPenG,  moving && focus==='pen');
+    sw(actMouseG,moving && focus==='mouse');
   }
   return { start, apply, setActivity, setSoloMute:v=>{ soloMute=v; apply(); } };
 })();
