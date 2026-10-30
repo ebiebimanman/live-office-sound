@@ -61,7 +61,7 @@
 </head>
 <body>
 <header>
-  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v18</span>
+  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v19</span>
   <span class="live"><span class="dot" id="liveDot"></span><span id="liveText">停止中</span></span>
   <span class="spacer"></span>
   <button id="silenceBtn" title="このタブの映像を共有すると、動画の動きに合わせて環境音が鳴ります">🎬 動き連動：オフ</button>
@@ -625,14 +625,14 @@ const amb = (()=>{
   /* 録音素材（すべて Freesound の CC0） */
   const FILES = { typing:'sound/typing.mp3', pen:'sound/pen.mp3', mouse:'sound/mouse.mp3' };
   // 素材ごとの音量のならし（元の録音レベルの差を埋める）
-  const TRIM = { typing:1.9, pen:0.35, mouse:2.2 };  // ペンは接写録音で大きく耳につくため約-9dB
+  const TRIM = { typing:1.9, pen:0.2, mouse:2.2 };  // ペンは接写録音で大きく耳につくため約-9dB
   // マウス録音のうち、音が鳴っている区間（秒）
   const MOUSE_EVENTS = [[0,0.65,1],[2.5,2.8,1],[4.72,5.25,1],[6.62,7.0,1],[8.72,9.1,1],[10.62,12.6,0.35],[12.6,15.55,0.5]]; // [開始,終了,音量]（ホイール部分は大きいので抑える）
   // 座席：あなたは原点で前（-z）を向いて座っている。机の高さは少し下（y=-0.4）
   const SEATS = {
     typeNear: {x: 0.45, z:-1.6, lp:12000},  // 向かいの席
     typeFar:  {x: 1.8,  z:-4.5, lp:3500 },  // 右前の離れた席
-    pen:      {x:-0.8,  z:-2.0, lp:6000, hp:180},  // 左斜め前。机のドンという低音と、高いカリカリを少し抑える
+    pen:      {x:-0.9,  z:-2.6, lp:3200, hp:220, cut:[1800,-6]},  // 左斜め前。机のドンという低音と、高いカリカリを少し抑える
     mouse:    {x: 0.45, z:-1.6, lp:12000},  // 向かいの席の人のマウス
   };
   let sends = null;
@@ -655,7 +655,8 @@ const amb = (()=>{
     const mono = c.createGain(); mono.channelCount=1; mono.channelCountMode='explicit'; mono.channelInterpretation='speakers';
     const lp = c.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=seat.lp;
     let head = lp;
-    if (seat.hp){ const hp = c.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=seat.hp; hp.connect(lp); head = hp; }
+    if (seat.cut){ const pk = c.createBiquadFilter(); pk.type='peaking'; pk.frequency.value=seat.cut[0]; pk.gain.value=seat.cut[1]; pk.Q.value=0.8; pk.connect(head); head = pk; } // 耳につく帯域を削る
+    if (seat.hp){ const hp = c.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=seat.hp; hp.connect(head); head = hp; }
     const pn = c.createPanner(); pn.panningModel='HRTF'; pn.distanceModel='inverse'; pn.refDistance=1.2; pn.rolloffFactor=1;
     if (pn.positionX){ pn.positionX.value=seat.x; pn.positionY.value=-0.4; pn.positionZ.value=seat.z; } else pn.setPosition(seat.x,-0.4,seat.z);
     mono.connect(head); lp.connect(pn); pn.connect(bus);
