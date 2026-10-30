@@ -61,9 +61,10 @@
 </head>
 <body>
 <header>
-  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v5</span>
+  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v6</span>
   <span class="live"><span class="dot" id="liveDot"></span><span id="liveText">停止中</span></span>
   <span class="spacer"></span>
+  <button id="silenceBtn" title="タブの音声を測って、無音の配信を自動で除外します">🔇 無音チェック：オフ</button>
   <span class="muted">音楽・雨・無音なら <span class="kbd">1</span><span class="kbd">2</span><span class="kbd">3</span>（その枠を除外）</span>
 </header>
 
@@ -365,14 +366,14 @@ function loadItem(s, item){
   s.q('ch').textContent = item.channelTitle;
   s.q('viewers').textContent = item.viewers ? `👤 ${item.viewers.toLocaleString()}人が視聴中` : '';
   s.q('fav').hidden = !S.favorites[item.channelId];
-  if (s.player && s.player.loadVideoById){ s.player.loadVideoById(item.videoId); applyVolumes(); return; }
+  if (s.player && s.player.loadVideoById){ s.player.loadVideoById(item.videoId); applyVolumes(); queueCheck(s); return; }
   const box = s.el.querySelector('.player');
   box.innerHTML = '<div></div>';
   s.player = new YT.Player(box.firstChild, {
     width:356, height:200, videoId:item.videoId,
     playerVars:{autoplay:1, playsinline:1, rel:0, modestbranding:1},
     events:{
-      onReady:()=>{ applyVolumes(); s.player.playVideo(); },
+      onReady:()=>{ applyVolumes(); s.player.playVideo(); queueCheck(s); },
       onStateChange:e=>{ if (e.data===0) fillSlot(s); },
       onError:()=>{ if (s.item) sessionBad.add(s.item.videoId); toast('再生できない配信だったので次へ'); fillSlot(s); }
     }
@@ -401,13 +402,111 @@ async function fillSlot(s){
   loadItem(s, pick); updateLive();
 }
 function applyVolumes(){
+  const solo = checkIdx>=0 ? checkIdx : soloIdx;
   slots.forEach(s=>{
     if (!s.player || !s.player.setVolume) return;
     if (s.kind==='presence'){ s.player.mute(); return; }
-    const muted = soloIdx>=0 && soloIdx!==s.idx;
-    if (muted) s.player.mute(); else { s.player.unMute(); s.player.setVolume(S.volumes[s.idx]??50); }
+    const muted = solo>=0 && solo!==s.idx;
+    const vol = checkIdx===s.idx ? Math.max(60, S.volumes[s.idx]??50) : (S.volumes[s.idx]??50);
+    if (muted) s.player.mute(); else { s.player.unMute(); s.player.setVolume(vol); }
   });
-  amb.setSoloMute(soloIdx>=0);
+  amb.setSoloMute(solo>=0);
+}
+
+/* ========== 無音チェック（タブ音声を測る） ========== */
+let checkIdx = -1, capStream = null, capCtx = null, capAnalyser = null, checkChain = Promise.resolve();
+const checkedOk = new Set(); // このセッションで音ありと確認した動画
+function capActive(){ return !!(capStream && capStream.getAudioTracks().some(t=>t.readyState==='live')); }
+function updateSilenceBtn(){
+  const b = document.getElementById('silenceBtn');
+  b.textContent = capActive() ? '🔊 無音チェック：オン' : '🔇 無音チェック：オフ';
+  b.classList.toggle('on', capActive());
+}
+async function enableSilenceCheck(){
+  if (capActive()) return true;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia){ toast('このブラウザは無音チェックに対応していません（PCのChrome/Edgeで使えます）'); return false; }
+  toast('共有画面で「このタブ」を選び、「タブの音声も共有する」をオンにしてください');
+  try{
+    capStream = await navigator.mediaDevices.getDisplayMedia({
+      video:{width:2,height:2,frameRate:1}, audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false,suppressLocalAudioPlayback:false},
+      preferCurrentTab:true, selfBrowserSurface:'include', systemAudio:'exclude', surfaceSwitching:'exclude'
+    });
+  }catch(e){ toast('無音チェックはオフのままです'); updateSilenceBtn(); return false; }
+  capStream.getVideoTracks().forEach(t=>t.enabled=false);
+  if (!capStream.getAudioTracks().length){
+    capStream.getTracks().forEach(t=>t.stop()); capStream=null;
+    toast('音声が共有されていません。「タブの音声も共有する」をオンにしてやり直してください');
+    updateSilenceBtn(); return false;
+  }
+  capCtx = new (window.AudioContext||window.webkitAudioContext)();
+  const src = capCtx.createMediaStreamSource(new MediaStream(capStream.getAudioTracks()));
+  capAnalyser = capCtx.createAnalyser(); capAnalyser.fftSize = 2048;
+  src.connect(capAnalyser); // スピーカーには繋がない
+  capStream.getAudioTracks()[0].addEventListener('ended', ()=>{ updateSilenceBtn(); toast('無音チェックがオフになりました'); });
+  updateSilenceBtn();
+  toast('無音チェックがオンになりました');
+  slots.forEach(s=>{ if (s.kind==='sound' && s.item) queueCheck(s); });
+  return true;
+}
+document.getElementById('silenceBtn').onclick = ()=>{ if (!capActive()) enableSilenceCheck(); };
+const sleep = ms=>new Promise(r=>setTimeout(r,ms));
+// 4秒間の音量（RMS）の最大値を測る
+async function measure(ms){
+  const buf = new Float32Array(capAnalyser.fftSize);
+  let peak = 0; const end = Date.now()+ms;
+  while (Date.now()<end){
+    capAnalyser.getFloatTimeDomainData(buf);
+    let sum=0; for (let i=0;i<buf.length;i++) sum+=buf[i]*buf[i];
+    peak = Math.max(peak, Math.sqrt(sum/buf.length));
+    await sleep(100);
+  }
+  return peak;
+}
+const SILENT_RMS = 0.004; // これ未満なら無音とみなす（約 -48dB）
+// 枠の配信を数秒ソロにして測る。音あり→true、無音→false、測れない→null
+async function checkSlot(s, videoId){
+  if (!capActive() || s.kind!=='sound') return null;
+  // 再生が始まるのを待つ（最大20秒）
+  for (let i=0;i<40;i++){
+    if (!s.item || s.item.videoId!==videoId) return null;
+    if (s.player && s.player.getPlayerState && s.player.getPlayerState()===1) break;
+    await sleep(500);
+  }
+  if (!s.player || !s.player.getPlayerState || s.player.getPlayerState()!==1) return null;
+  await sleep(1500);
+  if (!s.item || s.item.videoId!==videoId) return null;
+  if (capCtx.state==='suspended') { try{ await capCtx.resume(); }catch(e){} }
+  checkIdx = s.idx; applyVolumes();
+  const s0 = s.q('title').textContent; s.q('title').textContent = '🔍 音を確認中… ' + s0;
+  await sleep(400);
+  const peak = await measure(4000);
+  checkIdx = -1; applyVolumes();
+  if (s.item && s.item.videoId===videoId) s.q('title').textContent = s0;
+  return peak >= SILENT_RMS;
+}
+function queueCheck(s){
+  if (!capActive() || s.kind!=='sound' || !s.item) return;
+  const it = s.item;
+  if (checkedOk.has(it.videoId)) return;
+  checkChain = checkChain.then(async ()=>{
+    if (!s.item || s.item.videoId!==it.videoId) return;
+    const ok = await checkSlot(s, it.videoId);
+    if (ok===true) checkedOk.add(it.videoId);
+    if (ok===false && s.item && s.item.videoId===it.videoId) silentSkip(s);
+  }).catch(()=>{ checkIdx=-1; applyVolumes(); });
+}
+function silentSkip(s){
+  const it = s.item;
+  if (S.favorites[it.channelId]){
+    // 登録チャンネルは今回だけ飛ばす（いつもは音ありのはずなので）
+    sessionSkip.add(it.videoId);
+    toast(`「${it.channelTitle}」は今は無音だったので今回だけスキップしました`);
+  } else {
+    S.blocked[it.channelId] = {title:it.channelTitle, at:Date.now(), reason:'無音'};
+    save(); renderLists();
+    toast(`「${it.channelTitle}」は無音だったので除外しました`);
+  }
+  fillSlot(s);
 }
 function blockSlot(s){
   if (!s.item) return;
@@ -448,13 +547,22 @@ setInterval(()=>{
   slots.forEach(s=>{
     if (s.kind!=='sound' || !s.item || !s.player || !s.player.getPlayerState || s.item.channelId.startsWith('manual:')) return;
     if (s.player.getPlayerState()!==1) return;
-    if ((soloIdx>=0 && soloIdx!==s.idx) || (S.volumes[s.idx]??0)===0) return;
+    if (checkIdx>=0 || (soloIdx>=0 && soloIdx!==s.idx) || (S.volumes[s.idx]??0)===0) return;
     const ch = s.item.channelId;
     S.listened[ch] = (S.listened[ch]||0) + 5;
     const need = (+S.autoFavMin||15)*60;
     const p = S.favorites[ch] ? 100 : Math.min(100, S.listened[ch]/need*100);
     s.q('prog').style.width = p+'%';
-    if (!S.favorites[ch] && S.listened[ch] >= need) favSlot(s,false);
+    if (!S.favorites[ch] && S.listened[ch] >= need && !s.favChecking){
+      if (!capActive()) { favSlot(s,false); return; }
+      s.favChecking = true; const vid = s.item.videoId;
+      checkChain = checkChain.then(async ()=>{
+        const ok = await checkSlot(s, vid);
+        s.favChecking = false;
+        if (!s.item || s.item.videoId!==vid) return;
+        if (ok===false) silentSkip(s); else favSlot(s,false);
+      }).catch(()=>{ s.favChecking=false; checkIdx=-1; applyVolumes(); });
+    }
   });
   save();
 }, 5000);
@@ -564,6 +672,7 @@ function syncAmbSliders(){
 /* ========== 開始 ========== */
 document.getElementById('startBtn').onclick = async ()=>{
   amb.start();
+  if (S.silenceCheck!==false && ytReady && !capActive()) enableSilenceCheck();
   if (!ytReady){ toast('YouTubeの読み込み待ちです。数秒後にもう一度押してください'); return; }
   started = true;
   document.getElementById('startArea').style.display='none';
@@ -634,7 +743,7 @@ function renderLists(){
     if (!ents.length){ el.innerHTML='<div class="muted">まだありません</div>'; return; }
     ents.forEach(([ch,v])=>{
       const row=document.createElement('div');
-      const a=document.createElement('a'); a.href='https://www.youtube.com/channel/'+ch; a.target='_blank'; a.rel='noopener'; a.textContent=v.title||ch; a.style.color='inherit';
+      const a=document.createElement('a'); a.href='https://www.youtube.com/channel/'+ch; a.target='_blank'; a.rel='noopener'; a.textContent=(v.title||ch)+(v.reason?'（'+v.reason+'）':''); a.style.color='inherit';
       const b=document.createElement('button'); b.textContent=label; b.onclick=()=>{ onRemove(ch); save(); renderLists(); };
       row.append(a,b); el.appendChild(row);
     });
