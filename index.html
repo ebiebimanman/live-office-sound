@@ -61,7 +61,7 @@
 </head>
 <body>
 <header>
-  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v10</span>
+  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v11</span>
   <span class="live"><span class="dot" id="liveDot"></span><span id="liveText">停止中</span></span>
   <span class="spacer"></span>
   <button id="silenceBtn" title="このタブの音と映像を共有すると、無音の配信の自動除外と、動画の動きに合わせた効果音が使えます">🔇 無音チェック・動き連動：オフ</button>
@@ -99,7 +99,7 @@
         </div>
         <div class="muted" style="margin-top:8px">
           <label><input type="checkbox" id="presence"> 存在枠を追加（BGMつきでもOK、ミュートで画面だけ流す）</label><br>
-          <label><input type="checkbox" id="motionLink"> 動画の動きにタイピング音を連動させる（画面共有中のみ）</label>
+          <label><input type="checkbox" id="motionLink"> 動画の動きに環境音を連動させる（画面共有中のみ）</label>
         </div>
         <div class="muted" style="margin-top:8px">検索ワード（1行に1つ）</div>
         <textarea id="queries" rows="6" style="width:100%"></textarea>
@@ -330,7 +330,7 @@ function makeSlot(kind, idx){
   el.className='slot';
   const isP = kind==='presence';
   el.innerHTML = `
-    <div class="head"><span class="badge">${isP?'存在枠（ミュート）':'音 '+(idx+1)}</span><span class="badge fav" data-r="fav" hidden>★ 登録済み</span><span class="spacer"></span><span data-r="motion" class="muted" title="動画の動き（共有中のみ）"></span><span data-r="viewers"></span></div>
+    <div class="head"><span class="badge">${isP?'存在枠（ミュート）':'音 '+(idx+1)}</span><span class="badge fav" data-r="fav" hidden>★ 登録済み</span><span class="spacer"></span><span data-r="viewers"></span></div>
     <div class="player"><div data-r="yt"></div></div>
     <div class="title" data-r="title">—</div>
     <div class="ch" data-r="ch"></div>
@@ -464,16 +464,16 @@ function startMotion(track){
   clearInterval(motionTimer);
   motionTimer = setInterval(()=>{
     // 共有していない／このタブが裏に回っている（映像が更新されない）ときは連動しない
-    if (!capActive() || !motionVideo.videoWidth || document.hidden){ amb.setActivity(null); slots.forEach(s=>s.q&&s.q('motion')&&(s.q('motion').textContent='')); return; }
+    if (!capActive() || !motionVideo.videoWidth || document.hidden){ amb.setActivity(null); return; }
     const vw = motionVideo.videoWidth, vh = motionVideo.videoHeight;
     cv.width = 320; cv.height = Math.round(320*vh/vw);
     cx.drawImage(motionVideo, 0, 0, cv.width, cv.height);
     const sx = cv.width / window.innerWidth, sy = cv.height / window.innerHeight;
     let best = null;
     slots.forEach(s=>{
-      if (s.kind!=='sound' || !s.item){ s.motionPrev=null; s.q('motion').textContent=''; return; }
+      if (s.kind!=='sound' || !s.item){ s.motionPrev=null; return; }
       const r = s.el.querySelector('.player').getBoundingClientRect();
-      if (r.bottom<0 || r.top>window.innerHeight || r.width<10){ s.q('motion').textContent='（画面外）'; s.motionPrev=null; return; }
+      if (r.bottom<0 || r.top>window.innerHeight || r.width<10){ s.motionPrev=null; return; }
       const x = Math.max(0, Math.round(r.left*sx)), y = Math.max(0, Math.round(r.top*sy));
       const w = Math.min(cv.width-x, Math.round(r.width*sx)), hh = Math.min(cv.height-y, Math.round(r.height*sy));
       if (w<8 || hh<8) return;
@@ -492,13 +492,11 @@ function startMotion(track){
       }
       s.motionPrev = cur;
       // 再生中でないとき（バッファ中・停止）は判定しない
-      if (!s.player || !s.player.getPlayerState || s.player.getPlayerState()!==1){ s.q('motion').textContent='動き：—'; return; }
+      if (!s.player || !s.player.getPlayerState || s.player.getPlayerState()!==1)return;
       // 動いたマスの割合を 0〜1 に。少しの動きでも反応し、大きく動くほど強く
       const ratio = moved / cur.length;
       const raw = Math.min(1, Math.sqrt(ratio/0.12));
       s.motion = (s.motion??0) + (raw - (s.motion??0)) * (raw > (s.motion??0) ? 0.6 : 0.15);
-      const bars = Math.round(s.motion*5);
-      s.q('motion').textContent = '動き ' + '▮'.repeat(bars) + '▯'.repeat(5-bars);
       best = Math.max(best??0, s.motion);
     });
     amb.setActivity(S.motionLink===false ? null : best);
@@ -647,7 +645,7 @@ const amb = (()=>{
     pen:      {x:-0.7,  z:-1.4, lp:12000},  // 左斜め前
     mouse:    {x: 0.45, z:-1.6, lp:12000},  // 向かいの席の人のマウス
   };
-  let ctx, master, hvacG, typeG, penG, mouseG, actG=null, actFarG=null, soloMute=false, bufs={}, loading=null;
+  let ctx, master, hvacG, typeG, penG, mouseG, actG=null, actFarG=null, actPenG=null, actMouseG=null, outs=null, soloMute=false, bufs={}, loading=null;
   const R = (a,b)=>a+Math.random()*(b-a);
 
   function noiseBuf(c, sec){
@@ -706,9 +704,11 @@ const amb = (()=>{
     const outNear = actG;
     actFarG = ctx.createGain(); actFarG.gain.value = 1; actFarG.connect(seatOut(ctx, SEATS.typeFar, typeG, reverb, 0.3));
     const outFar = actFarG;
-    const outPen  = seatOut(ctx, SEATS.pen,      penG,  reverb, 0.1);
-    const outMouse= seatOut(ctx, SEATS.mouse,    mouseG,reverb, 0.08);
+    actPenG = ctx.createGain(); actPenG.connect(seatOut(ctx, SEATS.pen, penG, reverb, 0.1));
+    actMouseG = ctx.createGain(); actMouseG.connect(seatOut(ctx, SEATS.mouse, mouseG, reverb, 0.08));
+    const outPen = actPenG, outMouse = actMouseG;
     const T = bufs.typing, P = bufs.pen, M = bufs.mouse;
+    outs = {pen:outPen, mouse:outMouse};
     // タイピング：向かいの人。録音のランダムな位置から15〜45秒流し、たまに手を止める
     loop(t=>{
       const dur = Math.min(R(15,45), T.duration-1);
@@ -729,15 +729,7 @@ const amb = (()=>{
       return t + dur + R(4,25);
     }, R(2,8));
     // マウス：向かいの人がときどき操作する
-    loop(t=>{
-      const n = 1 + Math.floor(Math.random()*3);
-      for (let i=0;i<n;i++){
-        const [s,e] = MOUSE_EVENTS[Math.floor(Math.random()*MOUSE_EVENTS.length)];
-        playSegment(ctx, M, outMouse, t, s, e-s, 0.02, TRIM.mouse);
-        t += (e-s) + R(0.3,1.5);
-      }
-      return t + R(8,45);
-    }, R(5,20));
+    loop(t=>mouseBurst(t) + R(8,45), R(5,20));
   }
   function start(){
     if (ctx) return;
@@ -762,12 +754,43 @@ const amb = (()=>{
     mouseG.gain.value = ((S.amb.mouse??30)/100)*k;
   }
   // 動画の動き（0〜1、null は連動なし）に合わせてタイピングの強さを変える
+  function mouseBurst(t){
+    const n = 1 + Math.floor(Math.random()*3);
+    for (let i=0;i<n;i++){
+      const [s,e] = MOUSE_EVENTS[Math.floor(Math.random()*MOUSE_EVENTS.length)];
+      playSegment(ctx, bufs.mouse, outs.mouse, t, s, e-s, 0.02, TRIM.mouse);
+      t += (e-s) + R(0.3,1.5);
+    }
+    return t;
+  }
+  // 動きの「ひとまとまり」ごとに、どの音が反応するかをランダムに決める
+  const FOCUS_WEIGHTS = [['typing',0.45],['pen',0.35],['mouse',0.2]];
+  let focus = null, focusAt = 0, focusLen = 0, lastA = 0;
+  function pickFocus(now){
+    let r = Math.random(), f = 'typing';
+    for (const [k,w] of FOCUS_WEIGHTS){ if ((r-=w) < 0){ f = k; break; } }
+    if (f===focus && Math.random()<0.5) f = FOCUS_WEIGHTS[Math.floor(Math.random()*3)][0];
+    focus = f; focusAt = now; focusLen = R(12,35);
+    // 反応した瞬間にその音を鳴らし始める
+    if (f==='pen') { const P=bufs.pen, dur=Math.min(R(5,14),P.duration-1); playSegment(ctx, P, outs.pen, now+0.05, R(0,P.duration-dur), dur, 0.3, TRIM.pen); }
+    if (f==='mouse') mouseBurst(now+0.05);
+  }
+  // 動画の動き（0〜1、null は連動なし）に合わせて音の強さを変える
   function setActivity(a){
     if (!ctx || !actG) return;
-    const near = a==null ? 1 : 0.08 + 0.92*a;          // 動きがないとほぼ止まる
-    const far  = a==null ? 1 : 0.5 + 0.5*Math.min(1,a*1.5); // 遠くの人は少しだけ連動
-    actG.gain.setTargetAtTime(near, ctx.currentTime, a!=null && near>actG.gain.value ? 0.25 : 1.2);
-    actFarG.gain.setTargetAtTime(far, ctx.currentTime, 1.5);
+    const now = ctx.currentTime;
+    const set = (g,v,up)=>g.gain.setTargetAtTime(v, now, up && v>g.gain.value ? 0.25 : 1.2);
+    if (a==null){ focus=null; [actG,actFarG,actPenG,actMouseG].forEach(g=>set(g,1)); lastA=0; return; }
+    // 動き出した瞬間、または同じ動きが長く続いたら、反応する音を選び直す
+    if (a>0.35 && (lastA<0.2 || now-focusAt>focusLen)) pickFocus(now);
+    // 大きく動いた瞬間には、選ばれていない音もたまに鳴る
+    if (a-lastA>0.4 && Math.random()<0.3){ if (Math.random()<0.5) mouseBurst(now+0.1); }
+    lastA = a;
+    const lvl = (k)=> k===focus ? 0.1 + 0.9*a : 0.1 + 0.3*a;   // 選ばれた音は大きく連動、ほかは控えめ
+    set(actG, lvl('typing'), true);
+    set(actPenG, lvl('pen'), true);
+    set(actMouseG, Math.max(0.35, lvl('mouse')), true);
+    set(actFarG, 0.5 + 0.5*Math.min(1,a*1.5));
   }
   return { start, apply, setActivity, setSoloMute:v=>{ soloMute=v; apply(); } };
 })();
