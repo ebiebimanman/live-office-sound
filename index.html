@@ -61,7 +61,7 @@
 </head>
 <body>
 <header>
-  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v6</span>
+  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v7</span>
   <span class="live"><span class="dot" id="liveDot"></span><span id="liveText">停止中</span></span>
   <span class="spacer"></span>
   <button id="silenceBtn" title="タブの音声を測って、無音の配信を自動で除外します">🔇 無音チェック：オフ</button>
@@ -488,6 +488,7 @@ function queueCheck(s){
   if (!capActive() || s.kind!=='sound' || !s.item) return;
   const it = s.item;
   if (checkedOk.has(it.videoId)) return;
+  if (S.favorites[it.channelId]) return; // 登録チャンネルの無音は休憩中なのでチェックしない
   checkChain = checkChain.then(async ()=>{
     if (!s.item || s.item.videoId!==it.videoId) return;
     const ok = await checkSlot(s, it.videoId);
@@ -497,11 +498,8 @@ function queueCheck(s){
 }
 function silentSkip(s){
   const it = s.item;
-  if (S.favorites[it.channelId]){
-    // 登録チャンネルは今回だけ飛ばす（いつもは音ありのはずなので）
-    sessionSkip.add(it.videoId);
-    toast(`「${it.channelTitle}」は今は無音だったので今回だけスキップしました`);
-  } else {
+  if (S.favorites[it.channelId]) return; // 登録チャンネルは休憩中とみなしてそのまま流す
+  {
     S.blocked[it.channelId] = {title:it.channelTitle, at:Date.now(), reason:'無音'};
     save(); renderLists();
     toast(`「${it.channelTitle}」は無音だったので除外しました`);
@@ -579,80 +577,202 @@ document.addEventListener('keydown', e=>{
 
 /* ========== 合成環境音（Web Audio） ========== */
 const amb = (()=>{
-  let ctx, master, hvacG, typeG, paperG, soloMute=false, timers=[];
-  function noiseBuf(sec, brown){
-    const b = ctx.createBuffer(1, ctx.sampleRate*sec, ctx.sampleRate), d=b.getChannelData(0);
+  let ctx, master, hvacG, typeG, paperG, soloMute=false;
+  let white, brown, reverb;
+  const R = (a,b)=>a+Math.random()*(b-a);
+  function noiseBuf(c, sec, brownish){
+    const b = c.createBuffer(1, Math.floor(c.sampleRate*sec), c.sampleRate), d=b.getChannelData(0);
     let last=0;
-    for (let i=0;i<d.length;i++){ const w=Math.random()*2-1; if (brown){ last=(last+0.02*w)/1.02; d[i]=last*3.5; } else d[i]=w; }
+    for (let i=0;i<d.length;i++){ const w=Math.random()*2-1; if (brownish){ last=(last+0.02*w)/1.02; d[i]=last*3.5; } else d[i]=w; }
     return b;
   }
-  let white;
+  // 部屋の響き（短いリバーブ）
+  function makeReverb(c){
+    const len = Math.floor(c.sampleRate*0.9), b = c.createBuffer(2,len,c.sampleRate);
+    for (let ch=0;ch<2;ch++){ const d=b.getChannelData(ch); for (let i=0;i<len;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/len,3.2)*0.5; }
+    const cv = c.createConvolver(); cv.buffer = b; return cv;
+  }
+  function env(g, t, peak, attack, decay){
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(Math.max(peak,0.0002), t+attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t+attack+decay);
+  }
+  function noiseHit(c, out, t, type, freq, q, peak, attack, decay){
+    const s = c.createBufferSource(); s.buffer = white;
+    const f = c.createBiquadFilter(); f.type=type; f.frequency.value=freq; f.Q.value=q;
+    const g = c.createGain(); env(g,t,peak,attack,decay);
+    s.connect(f); f.connect(g); g.connect(out);
+    s.start(t, R(0,1.5), attack+decay+0.02);
+  }
+  function toneHit(c, out, t, freq, peak, decay){
+    const o = c.createOscillator(); o.type='sine';
+    o.frequency.setValueAtTime(freq*1.15,t); o.frequency.exponentialRampToValueAtTime(freq,t+0.02);
+    const g = c.createGain(); env(g,t,peak,0.002,decay);
+    o.connect(g); g.connect(out); o.start(t); o.stop(t+decay+0.05);
+  }
+
+  /* ---- タイピング ---- */
+  // キー1打：低めの「コトッ」＋控えめなクリック＋指を離す音
+  function key(c, kb, t, vel, kind){
+    const out = kb.input;
+    const big = kind==='space' || kind==='enter';
+    const tf = kb.thockF * (big?0.75:R(0.9,1.12));
+    noiseHit(c,out,t,'bandpass',tf,1.4, 0.55*vel*(big?1.25:1), 0.003, big?0.12:R(0.06,0.085));
+    toneHit(c,out,t, kb.bodyF*(big?0.8:R(0.95,1.05)), 0.16*vel*(big?1.4:1), big?0.09:0.06);
+    noiseHit(c,out,t,'bandpass',kb.clickF*R(0.9,1.1),2.2, 0.16*vel, 0.002, 0.025);
+    const up = t + (big?R(0.1,0.16):R(0.065,0.11));
+    noiseHit(c,out,up,'bandpass',tf*1.1,1.6, 0.2*vel, 0.002, 0.045);
+    noiseHit(c,out,up,'bandpass',kb.clickF*1.05,2.5, 0.06*vel, 0.002, 0.02);
+  }
+  // 1文ぶん打つ。終わる時刻を返す
+  function typeSentence(c, kb, t){
+    const speed = kb.speed * R(0.8,1.25);           // その文の勢い
+    const words = 3 + Math.floor(Math.random()*10);
+    for (let w=0; w<words; w++){
+      const len = 2 + Math.floor(Math.random()*7);
+      for (let i=0;i<len;i++){
+        // 単語の最初はやや遅く、途中は速い。ときどき引っかかる
+        let gap = speed * (i===0 ? R(1.1,1.6) : R(0.55,1.15));
+        if (Math.random()<0.06) gap += R(0.15,0.45);
+        t += gap;
+        key(c, kb, t, R(0.55,1)*(i===0?1.1:1), 'key');
+      }
+      t += speed*R(0.8,1.4);
+      key(c, kb, t, R(0.7,1), 'space');
+      // 打ち間違い → バックスペース連打
+      if (Math.random()<0.08){
+        t += R(0.25,0.7);
+        const n = 2+Math.floor(Math.random()*5);
+        for (let i=0;i<n;i++){ t += R(0.08,0.12); key(c, kb, t, R(0.6,0.85), 'key'); }
+        t += R(0.2,0.5);
+      }
+      // 考え中の間
+      if (Math.random()<0.15) t += R(0.6,2.5);
+    }
+    if (Math.random()<0.5){ t += R(0.3,0.8); key(c, kb, t, R(0.85,1.1), 'enter'); }
+    return t;
+  }
+  function makeTypist(c, dest, p){
+    const near = [0.9,0.6,0.4][p];
+    const lp = c.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value = 1800 + near*2200; // 遠い人ほどこもる
+    const pan = c.createStereoPanner(); pan.pan.value = [-0.45,0.35,0.75][p];
+    const g = c.createGain(); g.gain.value = near;
+    const input = c.createGain();
+    input.connect(lp); lp.connect(pan); pan.connect(g); g.connect(dest);
+    return { input,
+      thockF: [520,430,620][p]*R(0.95,1.05), bodyF:[210,170,240][p], clickF:[1500,1300,1750][p],
+      speed: [0.15,0.19,0.13][p] };
+  }
+
+  /* ---- ペンで書く ---- */
+  // 紙をこする連続音を、画（ストローク）ごとに強弱・音程をつけて鳴らす。終わる時刻を返す
+  function writeSession(c, dest, t){
+    const pan = c.createStereoPanner(); pan.pan.value = R(-0.6,0.6);
+    const g = c.createGain(); g.gain.value = 0;
+    const bp = c.createBiquadFilter(); bp.type='bandpass'; bp.Q.value=0.8;
+    const lp = c.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=2200;
+    const s = c.createBufferSource(); s.buffer=white; s.loop=true;
+    // 低いザラつき（紙と机の鳴り）
+    const s2 = c.createBufferSource(); s2.buffer=brown; s2.loop=true;
+    const lp2 = c.createBiquadFilter(); lp2.type='lowpass'; lp2.frequency.value=380;
+    const g2 = c.createGain(); g2.gain.value = 0;
+    s.connect(bp); bp.connect(lp); lp.connect(g); g.connect(pan);
+    s2.connect(lp2); lp2.connect(g2); g2.connect(pan);
+    pan.connect(dest);
+    const start = t;
+    g.gain.setValueAtTime(0,t); g2.gain.setValueAtTime(0,t);
+    const base = R(650,1100), loud = R(0.35,0.55);
+    const lines = 1 + Math.floor(Math.random()*3);
+    for (let l=0;l<lines;l++){
+      const chars = 4 + Math.floor(Math.random()*12);
+      for (let ch=0; ch<chars; ch++){
+        const strokes = 1 + Math.floor(Math.random()*4);
+        for (let k=0;k<strokes;k++){
+          const dur = R(0.07,0.26), v = R(0.6,1);
+          // ペン先が触れる → 動く（速いほど高く大きく） → 止まって離れる
+          g.gain.setTargetAtTime(loud*v, t, 0.012);
+          g2.gain.setTargetAtTime(loud*v*0.9, t, 0.015);
+          bp.frequency.setTargetAtTime(base*R(1.0,1.5)*v, t, 0.02);
+          const mid = t+dur*R(0.4,0.7);
+          bp.frequency.setTargetAtTime(base*R(0.75,1.0), mid, 0.04);
+          g.gain.setTargetAtTime(loud*v*R(0.5,0.8), mid, 0.03);
+          t += dur;
+          g.gain.setTargetAtTime(0, t, 0.012);
+          g2.gain.setTargetAtTime(0, t, 0.015);
+          t += R(0.03,0.09); // ペンを持ち上げて次の画へ
+        }
+        t += R(0.05,0.16);
+        if (Math.random()<0.12) t += R(0.2,0.5); // 単語の切れ目
+      }
+      if (Math.random()<0.5){ noiseHit(c,pan,t,'bandpass',R(1400,1900),2,0.12,0.002,0.02); t+=0.05; } // 句点のトン
+      t += R(0.6,1.6); // 改行・見直し
+    }
+    s.start(start, R(0,1)); s2.start(start, R(0,4));
+    s.stop(t+0.3); s2.stop(t+0.3);
+    return t;
+  }
+  // 紙をめくる（低め・ゆっくり）
+  function pageTurn(c, dest, t){
+    const s = c.createBufferSource(); s.buffer=white;
+    const bp = c.createBiquadFilter(); bp.type='bandpass'; bp.frequency.setValueAtTime(R(900,1400),t); bp.frequency.linearRampToValueAtTime(R(1800,2600),t+0.35); bp.Q.value=0.7;
+    const g = c.createGain(); g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(0.18,t+0.12); g.gain.linearRampToValueAtTime(0.06,t+0.3); g.gain.linearRampToValueAtTime(0,t+0.55);
+    const pan = c.createStereoPanner(); pan.pan.value=R(-0.6,0.6);
+    s.connect(bp); bp.connect(g); g.connect(pan); pan.connect(dest);
+    s.start(t, R(0,1), 0.6);
+  }
+
+  // 音量スライダー（Gain）の後ろから部屋の響きへ送る
+  function setupGraph(c){
+    white = noiseBuf(c,2,false); brown = noiseBuf(c,6,true);
+    const m = c.createGain(); m.connect(c.destination);
+    reverb = makeReverb(c); const wet = c.createGain(); wet.gain.value = 0.3; reverb.connect(wet); wet.connect(m);
+    const h = c.createGain(), ty = c.createGain(), pa = c.createGain();
+    h.connect(m); ty.connect(m); pa.connect(m);
+    ty.connect(reverb); pa.connect(reverb);
+    return {m,h,ty,pa};
+  }
+
+  // 先読みスケジューラ：次の予定時刻が近づいたら続きを予約する
+  function loop(fn){
+    let next = ctx.currentTime + R(0.5,4);
+    const tick = ()=>{
+      if (!ctx) return;
+      if (next - ctx.currentTime < 2) next = fn(Math.max(next, ctx.currentTime+0.05));
+      setTimeout(tick, 500);
+    };
+    tick();
+  }
   function start(){
     if (ctx) return;
     ctx = new (window.AudioContext||window.webkitAudioContext)();
-    master = ctx.createGain(); master.connect(ctx.destination);
-    white = noiseBuf(2,false);
+    const gph = setupGraph(ctx); master=gph.m; hvacG=gph.h; typeG=gph.ty; paperG=gph.pa;
     // 空調
-    hvacG = ctx.createGain(); hvacG.connect(master);
-    const src = ctx.createBufferSource(); src.buffer = noiseBuf(8,true); src.loop=true;
+    const src = ctx.createBufferSource(); src.buffer = noiseBuf(ctx,8,true); src.loop=true;
     const lp = ctx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=380;
     src.connect(lp); lp.connect(hvacG); src.start();
-    typeG = ctx.createGain(); typeG.connect(master);
-    paperG = ctx.createGain(); paperG.connect(master);
-    // 周りの人（3人分のタイピング）
-    for (let p=0;p<3;p++) typist(p);
-    paperLoop();
+    // 周りの3人
+    for (let p=0;p<3;p++){
+      const kb = makeTypist(ctx, typeG, p);
+      loop(t=>{
+        if (Math.random()<0.25) return t + R(3,15); // 手を止めている時間
+        return typeSentence(ctx, kb, t) + R(0.4,3);
+      });
+    }
+    loop(t=>{
+      if (Math.random()<0.15){ pageTurn(ctx, paperG, t); return t + R(2,6); }
+      return writeSession(ctx, paperG, t) + R(4,20);
+    });
     apply();
-  }
-  function click(t, pan, strength){
-    const s = ctx.createBufferSource(); s.buffer = white;
-    const bp = ctx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value = 1800+Math.random()*2200; bp.Q.value=1.2;
-    const g = ctx.createGain(); const pn = ctx.createStereoPanner(); pn.pan.value = pan;
-    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.5*strength, t+0.002); g.gain.exponentialRampToValueAtTime(0.001, t+0.035+Math.random()*0.02);
-    s.connect(bp); bp.connect(g); g.connect(pn); pn.connect(typeG);
-    s.start(t, Math.random()*1.5, 0.08);
-  }
-  function typist(p){
-    const pan = [-0.6,0.15,0.7][p], strength=[0.5,0.8,0.35][p];
-    const burst = ()=>{
-      if (!ctx) return;
-      let t = ctx.currentTime+0.05;
-      const n = 4+Math.floor(Math.random()*30);
-      for (let i=0;i<n;i++){ t += 0.07+Math.random()*0.16 + (Math.random()<0.12?0.35:0); click(t,pan,strength*(0.7+Math.random()*0.5)); }
-      const wait = (t-ctx.currentTime)*1000 + 1500 + Math.random()*9000;
-      timers.push(setTimeout(burst, wait));
-    };
-    timers.push(setTimeout(burst, Math.random()*4000));
-  }
-  function paperLoop(){
-    const go = ()=>{
-      if (!ctx) return;
-      const t = ctx.currentTime+0.05, dur = 0.25+Math.random()*0.6, kind=Math.random();
-      const s = ctx.createBufferSource(); s.buffer=white;
-      const bp = ctx.createBiquadFilter(); bp.type='bandpass';
-      bp.frequency.value = kind<0.5 ? 3500+Math.random()*2500 : 5000+Math.random()*2000; bp.Q.value = kind<0.5?0.8:3;
-      const g = ctx.createGain(); const pn=ctx.createStereoPanner(); pn.pan.value=Math.random()*1.4-0.7;
-      g.gain.setValueAtTime(0,t);
-      if (kind<0.5){ // 紙をめくる
-        g.gain.linearRampToValueAtTime(0.25,t+dur*0.3); g.gain.linearRampToValueAtTime(0,t+dur);
-      } else {       // ペンで書く（細かい強弱）
-        const steps = 6+Math.floor(Math.random()*10);
-        for (let i=0;i<steps;i++){ const tt=t+i*dur*1.5/steps; g.gain.linearRampToValueAtTime(0.06+Math.random()*0.08,tt+0.02); g.gain.linearRampToValueAtTime(0.01,tt+dur*1.5/steps); }
-      }
-      s.connect(bp); bp.connect(g); g.connect(pn); pn.connect(paperG);
-      s.start(t, Math.random()*0.5, dur*1.6);
-      timers.push(setTimeout(go, 4000+Math.random()*16000));
-    };
-    timers.push(setTimeout(go, 3000));
   }
   function apply(){
     if (!ctx) return;
     const k = soloMute?0:1;
     hvacG.gain.value  = (S.amb.hvac/100)*0.35*k;
-    typeG.gain.value  = (S.amb.type/100)*0.9*k;
-    paperG.gain.value = (S.amb.paper/100)*0.9*k;
+    typeG.gain.value  = (S.amb.type/100)*1.8*k;
+    paperG.gain.value = (S.amb.paper/100)*0.6*k;
   }
-  return { start, apply, setSoloMute:v=>{ soloMute=v; apply(); } };
+  return { start, apply, setSoloMute:v=>{ soloMute=v; apply(); },
+    _test:{ setupGraph, makeTypist, typeSentence, writeSession, pageTurn } };
 })();
 function bumpAmbience(){
   let changed=false;
