@@ -214,13 +214,18 @@ async function fetchCandidates(force){
   if (!force && S.cache && Date.now()-S.cache.at < CACHE_MS) return S.cache.items;
   setStatus('ライブ配信を検索中…');
   const ids = new Set();
-  // 1) 広く検索
-  for (const q of S.queries.filter(Boolean)){
+  const qs = S.queries.filter(Boolean);
+  let firstErr = null, okCount = 0;
+  // 1) 広く検索（eventType=live で「今ライブ中」の配信だけに絞り込み）
+  for (const q of qs){
     try{
       const j = await api('search',{part:'snippet',type:'video',eventType:'live',maxResults:50,q},100);
-      j.items.forEach(it=>it.id&&it.id.videoId&&ids.add(it.id.videoId));
-    }catch(e){ if (/無料枠|APIキー|制限/.test(e.message)) throw e; }
+      (j.items||[]).forEach(it=>it.id&&it.id.videoId&&ids.add(it.id.videoId));
+      okCount++;
+    }catch(e){ firstErr = firstErr||e; if (/無料枠|APIキー|制限/.test(e.message)) throw e; }
   }
+  if (qs.length && okCount===0 && firstErr) throw firstErr;
+  const hitCount = ids.size;
   // 2) 登録チャンネルの前回の配信IDも確認（24時間配信ならこれで拾える）
   Object.values(S.favorites).forEach(f=>f.lastVideoId&&ids.add(f.lastVideoId));
   let items = await details([...ids]);
@@ -237,15 +242,16 @@ async function fetchCandidates(force){
   if (extra.size) items = items.concat(await details([...extra]));
   // 登録チャンネルの最新配信IDを更新
   items.forEach(i=>{ if (S.favorites[i.channelId]) S.favorites[i.channelId].lastVideoId = i.videoId; });
-  S.cache = {at:Date.now(), items};
+  if (items.length) S.cache = {at:Date.now(), items};  // 0件はキャッシュしない
   save();
-  document.getElementById('quotaNote').textContent = `この検索で約${quotaUsed}ユニット使用（今日の累計はこのタブを開いてからの分のみ表示）`;
+  document.getElementById('quotaNote').textContent =
+    `検索ヒット ${hitCount}件 → 再生できるライブ ${items.length}件（このタブで約${quotaUsed}ユニット使用）`;
   return items;
 }
 async function details(ids){
   const out = [];
   for (let i=0;i<ids.length;i+=50){
-    const j = await api('videos',{part:'snippet,status,liveStreamingDetails',id:ids.slice(i,i+50).join(','),maxResults:50},1);
+    const j = await api('videos',{part:'snippet,status,liveStreamingDetails',id:ids.slice(i,i+50).join(',')},1);
     j.items.forEach(v=>{
       if (v.snippet.liveBroadcastContent!=='live') return;
       if (v.status && v.status.embeddable===false) return;
@@ -333,7 +339,7 @@ function loadItem(s, item){
     }
   });
 }
-let candidates = [];
+let candidates = [], lastErr = '';
 async function fillSlot(s){
   const playing = new Set(slots.filter(x=>x!==s && x.item).map(x=>x.item.videoId));
   const usable = c => !playing.has(c.videoId) && !sessionBad.has(c.videoId) && !sessionSkip.has(c.videoId);
@@ -348,7 +354,8 @@ async function fillSlot(s){
     try{ candidates = await fetchCandidates(true); return fillSlot(s); }catch(e){ toast(e.message); }
   }
   if (!pick){
-    showEmpty(s, s.kind==='presence' ? '流せるライブがありません' : '今は条件に合うライブが見つかりません。<br>合成環境音を上げています。');
+    const why = lastErr ? `<br><small style="color:var(--warn)">${lastErr.replace(/</g,'&lt;')}</small>` : '';
+    showEmpty(s, (s.kind==='presence' ? '流せるライブがありません' : '今は条件に合うライブが見つかりません。<br>合成環境音を上げています。') + why);
     if (s.kind==='sound') bumpAmbience();
     updateLive(); return;
   }
@@ -528,8 +535,8 @@ document.getElementById('startBtn').onclick = async ()=>{
     document.getElementById('settingsBox').open = true;
     updateLive(); return;
   }
-  try{ candidates = await fetchCandidates(false); }
-  catch(e){ toast(e.message); candidates = (S.cache&&S.cache.items)||[]; }
+  try{ candidates = await fetchCandidates(false); lastErr=''; }
+  catch(e){ lastErr = e.message; toast(e.message); candidates = (S.cache&&S.cache.items)||[]; }
   for (const s of slots) await fillSlot(s);
 };
 
@@ -557,12 +564,12 @@ document.getElementById('saveSettings').onclick = async ()=>{
   save(); toast('保存しました');
   if (started){
     buildSlots();
-    if (S.apiKey){ try{ candidates = await fetchCandidates(false); }catch(e){ toast(e.message); } }
+    if (S.apiKey){ try{ candidates = await fetchCandidates(false); lastErr=''; }catch(e){ lastErr=e.message; toast(e.message); } }
     for (const s of slots) await fillSlot(s);
   }
 };
 document.getElementById('refreshBtn').onclick = async ()=>{
-  try{ candidates = await fetchCandidates(true); toast(`${candidates.length}件のライブが見つかりました`); }catch(e){ toast(e.message); }
+  try{ candidates = await fetchCandidates(true); lastErr=''; toast(`${candidates.length}件のライブが見つかりました`); }catch(e){ lastErr=e.message; toast(e.message); }
 };
 document.getElementById('manualBtn').onclick = ()=>{
   const v = document.getElementById('manualUrl').value.trim();
