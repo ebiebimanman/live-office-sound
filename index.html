@@ -61,10 +61,10 @@
 </head>
 <body>
 <header>
-  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v4</span>
+  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v5</span>
   <span class="live"><span class="dot" id="liveDot"></span><span id="liveText">停止中</span></span>
   <span class="spacer"></span>
-  <span class="muted">音楽・雨が聞こえたら <span class="kbd">1</span><span class="kbd">2</span><span class="kbd">3</span>（その枠を除外）</span>
+  <span class="muted">音楽・雨・無音なら <span class="kbd">1</span><span class="kbd">2</span><span class="kbd">3</span>（その枠を除外）</span>
 </header>
 
 <main>
@@ -151,7 +151,7 @@
 /* ========== 保存データ ========== */
 const STORE_KEY = 'virtualOffice.v1';
 const DEFAULT_QUERIES = ['作業配信','勉強配信','study with me live','work with me live','作業用 ライブ','勉強 ライブ 一緒に'];
-const DEFAULT_EXCLUDE = ['english','英語','listening','リスニング','podcast','ニュース','news','bgm','music','音楽','lofi','lo-fi','lo fi','piano','ピアノ','jazz','ジャズ','rain','雨','chill','beats','radio','ラジオ','歌','song','playlist','プレイリスト','cafe','カフェ','焚き火','fireplace'];
+const DEFAULT_EXCLUDE = ['無音','音なし','音無し','音声なし','音声無し','ミュート','mute','muted','silent','silence','no sound','no audio','english','英語','listening','リスニング','podcast','ニュース','news','bgm','music','音楽','lofi','lo-fi','lo fi','piano','ピアノ','jazz','ジャズ','rain','雨','chill','beats','radio','ラジオ','歌','song','playlist','プレイリスト','cafe','カフェ','焚き火','fireplace'];
 const DEFAULT_REQUIRE = ['study with me','work with me','studywithme','workwithme','study together','co-working','coworking','pomodoro','ポモドーロ','作業配信','勉強配信','作業用','作業通話','もくもく','一緒に勉強','一緒に作業','いっしょに勉強','一緒に頑張','勉強ライブ','作業ライブ','勉強枠','作業枠','study live','studying','typing','タイピング','作業音','執筆','受験勉強','資格勉強'];
 const DEFAULT_ALLOW = ['bgmなし','bgm無し','bgmなしで','no bgm','no music','without music','音楽なし','音楽無し','bgm off','bgmオフ'];
 function normWord(w){ return (w||'').toLowerCase().normalize('NFKC').trim(); }
@@ -187,6 +187,7 @@ const defaults = () => ({
 let S = defaults();
 try { const raw = localStorage.getItem(STORE_KEY); if (raw) S = Object.assign(defaults(), JSON.parse(raw)); } catch(e){}
 if (!S.migratedV2){ ['english','英語','listening','リスニング','podcast','ニュース','news'].forEach(w=>{ if(!S.excludeWords.includes(w)) S.excludeWords.unshift(w); }); S.migratedV2=true; }
+if (!S.migratedV3){ ['無音','音なし','音無し','音声なし','音声無し','ミュート','mute','muted','silent','silence','no sound','no audio'].forEach(w=>{ if(!S.excludeWords.includes(w)) S.excludeWords.unshift(w); }); S.migratedV3=true; }
 if (S.cache && S.cache.v!==4) S.cache = null; // 古い形式の候補キャッシュは捨てる
 function save(){ try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch(e){} }
 
@@ -333,7 +334,7 @@ function makeSlot(kind, idx){
     <div class="vol">音量<input type="range" min="0" max="100" data-r="vol"><span data-r="volv"></span></div>
     <div class="progress" title="自動登録までの進み具合"><div data-r="prog"></div></div>
     <div class="row">
-      <button class="warn" data-r="block" title="キー ${idx+1}">✕ 音楽・雨あり</button>
+      <button class="warn" data-r="block" title="音楽・雨が聞こえる／無音のとき（キー ${idx+1}）">✕ 合わない</button>
       <button data-r="star">★ 登録</button>
       <button data-r="solo">ソロで聴く</button>
       <button data-r="next">次へ</button>
