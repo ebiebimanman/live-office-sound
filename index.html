@@ -61,7 +61,7 @@
 </head>
 <body>
 <header>
-  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v19</span>
+  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v20</span>
   <span class="live"><span class="dot" id="liveDot"></span><span id="liveText">停止中</span></span>
   <span class="spacer"></span>
   <button id="silenceBtn" title="このタブの映像を共有すると、動画の動きに合わせて環境音が鳴ります">🎬 動き連動：オフ</button>
@@ -625,7 +625,7 @@ const amb = (()=>{
   /* 録音素材（すべて Freesound の CC0） */
   const FILES = { typing:'sound/typing.mp3', pen:'sound/pen.mp3', mouse:'sound/mouse.mp3' };
   // 素材ごとの音量のならし（元の録音レベルの差を埋める）
-  const TRIM = { typing:1.9, pen:0.2, mouse:2.2 };  // ペンは接写録音で大きく耳につくため約-9dB
+  const TRIM = { typing:1.9, pen:0.8, mouse:3.5 };  // スライダーが同じ位置なら、3つがおおよそ同じくらいの大きさに聞こえるよう揃えた値。今後はここで音量を調整せず、スライダーに任せる  // ペンは接写録音で大きく耳につくため約-9dB
   // マウス録音のうち、音が鳴っている区間（秒）
   const MOUSE_EVENTS = [[0,0.65,1],[2.5,2.8,1],[4.72,5.25,1],[6.62,7.0,1],[8.72,9.1,1],[10.62,12.6,0.35],[12.6,15.55,0.5]]; // [開始,終了,音量]（ホイール部分は大きいので抑える）
   // 座席：あなたは原点で前（-z）を向いて座っている。机の高さは少し下（y=-0.4）
@@ -741,7 +741,7 @@ const amb = (()=>{
     if (ctx) return;
     ctx = new (window.AudioContext||window.webkitAudioContext)();
     const comp = ctx.createDynamicsCompressor(); comp.threshold.value=-6; comp.ratio.value=8; comp.connect(ctx.destination);
-    master = ctx.createGain(); master.connect(comp);
+    master = ctx.createGain(); master.gain.value = 2; master.connect(comp);
     hvacG = ctx.createGain(); typeG = ctx.createGain(); penG = ctx.createGain(); mouseG = ctx.createGain();
     [hvacG,typeG,penG,mouseG].forEach(g=>g.connect(master));
     // 空調（合成）
@@ -754,10 +754,11 @@ const amb = (()=>{
   function apply(){
     if (!ctx) return;
     const k = soloMute?0:1;
-    hvacG.gain.value  = (S.amb.hvac/100)*0.35*k;
-    typeG.gain.value  = (S.amb.type/100)*k;
-    penG.gain.value   = (S.amb.paper/100)*k;
-    mouseG.gain.value = ((S.amb.mouse??30)/100)*k;
+    const curve = v => Math.pow(v/100, 2);  // 耳の感じ方に合わせ、小さい側を細かく調整できるようにする（50で約-12dB、0で無音）
+    hvacG.gain.value  = curve(S.amb.hvac)*0.35*k;
+    typeG.gain.value  = curve(S.amb.type)*k;
+    penG.gain.value   = curve(S.amb.paper)*k;
+    mouseG.gain.value = curve(S.amb.mouse??30)*k;
     if (sends) sends.forEach((s,bus)=>{ s.gain.value = bus.gain.value; });
   }
   // 動画の動き（0〜1、null は連動なし）に合わせてタイピングの強さを変える
