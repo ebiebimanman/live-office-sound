@@ -61,7 +61,7 @@
 </head>
 <body>
 <header>
-  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v17</span>
+  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v18</span>
   <span class="live"><span class="dot" id="liveDot"></span><span id="liveText">停止中</span></span>
   <span class="spacer"></span>
   <button id="silenceBtn" title="このタブの映像を共有すると、動画の動きに合わせて環境音が鳴ります">🎬 動き連動：オフ</button>
@@ -668,7 +668,9 @@ const amb = (()=>{
     return 0;
   }
   // 録音の一部分をフェードつきで鳴らす
-  function playSegment(c, buf, out, t, offset, dur, fade, gain){
+  const busy = {typing:0, pen:0, mouse:0}; // 各音がいつまで鳴っている予定か
+  function playSegment(c, buf, out, t, offset, dur, fade, gain, layer){
+    if (layer) busy[layer] = Math.max(busy[layer], t+dur);
     const s = c.createBufferSource(); s.buffer = buf;
     const g = c.createGain();
     g.gain.setValueAtTime(0, t);
@@ -711,11 +713,11 @@ const amb = (()=>{
     actMouseG = ctx.createGain(); actMouseG.connect(seatOut(ctx, SEATS.mouse, mouseG, reverb, 0.08));
     const outPen = actPenG, outMouse = actMouseG;
     const T = bufs.typing, P = bufs.pen, M = bufs.mouse;
-    outs = {pen:outPen, mouse:outMouse};
+    outs = {pen:outPen, mouse:outMouse, typing:outNear};
     // タイピング：向かいの人。録音のランダムな位置から15〜45秒流し、たまに手を止める
     loop(t=>{
       const dur = Math.min(R(15,45), T.duration-1);
-      playSegment(ctx, T, outNear, t, typingOffset(T, dur), dur, 2, TRIM.typing);
+      playSegment(ctx, T, outNear, t, typingOffset(T, dur), dur, 2, TRIM.typing, 'typing');
       return t + dur - 2 + (Math.random()<0.3 ? R(3,12) : 0);  // 2秒重ねてつなぐ／ときどき休憩
     }, 0.2);
     // タイピング：離れた席の人。小さく・こもって、別の位置から
@@ -728,7 +730,7 @@ const amb = (()=>{
     // ペン：左斜め前の人。書いては止まる
     loop(t=>{
       const dur = Math.min(R(6,22), P.duration-1);
-      playSegment(ctx, P, outPen, t, R(0, P.duration-dur), dur, 0.6, TRIM.pen);
+      playSegment(ctx, P, outPen, t, R(0, P.duration-dur), dur, 0.6, TRIM.pen, 'pen');
       return t + dur + R(4,25);
     }, R(2,8));
     // マウス：向かいの人がときどき操作する
@@ -762,7 +764,7 @@ const amb = (()=>{
     const n = 1 + Math.floor(Math.random()*3);
     for (let i=0;i<n;i++){
       const [s,e,v] = MOUSE_EVENTS[Math.floor(Math.random()*MOUSE_EVENTS.length)];
-      playSegment(ctx, bufs.mouse, outs.mouse, t, s, e-s, 0.02, TRIM.mouse*v);
+      playSegment(ctx, bufs.mouse, outs.mouse, t, s, e-s, 0.02, TRIM.mouse*v, 'mouse');
       t += (e-s) + R(0.3,1.5);
     }
     return t;
@@ -776,8 +778,14 @@ const amb = (()=>{
     if (f===focus && Math.random()<0.5) f = FOCUS_WEIGHTS[Math.floor(Math.random()*3)][0];
     focus = f; focusAt = now; focusLen = f==='mouse' ? R(6,15) : R(12,35);
     // 反応した瞬間にその音を鳴らし始める
-    if (f==='pen') { const P=bufs.pen, dur=Math.min(R(5,14),P.duration-1); playSegment(ctx, P, outs.pen, now+0.05, R(0,P.duration-dur), dur, 0.3, TRIM.pen); }
-    if (f==='mouse') mouseBurst(now+0.05);
+    keepAlive(f, now);
+  }
+  // 選ばれた音が、ちょうど休み中で鳴っていなければ、その場で鳴らし始める
+  function keepAlive(f, now){
+    if (busy[f] > now + 0.3) return;
+    if (f==='typing'){ const T=bufs.typing, dur=Math.min(R(8,20),T.duration-1); playSegment(ctx, T, outs.typing, now+0.05, typingOffset(T,dur), dur, 0.15, TRIM.typing, 'typing'); }
+    if (f==='pen'){ const P=bufs.pen, dur=Math.min(R(5,14),P.duration-1); playSegment(ctx, P, outs.pen, now+0.05, R(0,P.duration-dur), dur, 0.15, TRIM.pen, 'pen'); }
+    if (f==='mouse'){ mouseBurst(now+0.05); busy.mouse = Math.max(busy.mouse, now + R(1,3)); } // クリックの合間は少し空ける
   }
   // 動画の動き（0〜1、null は連動なし）に合わせて、音を「鳴らす／止める」だけ切り替える（大きさは変えない）
   function setActivity(a){
@@ -787,10 +795,11 @@ const amb = (()=>{
     if (a==null){ focus=null; moving=false; [actG,actFarG,actPenG,actMouseG].forEach(g=>sw(g,true)); lastA=0; return; }
     // 動いている／止まっているの判定（ちらつき防止に、入りと切れのしきい値を分ける）
     const wasMoving = moving;
-    if (!moving && a>0.35) moving = true;
-    else if (moving && a<0.2) moving = false;
+    if (!moving && a>0.25) moving = true;
+    else if (moving && a<0.12) moving = false;
     // 動き出した瞬間、または同じ動きが長く続いたら、鳴らす音を選び直す
     if (moving && (!wasMoving || now-focusAt>focusLen)) pickFocus(now);
+    else if (moving && focus) keepAlive(focus, now);   // 動いている間は、選ばれた音を途切れさせない
     lastA = a;
     sw(actG,     moving && focus==='typing');
     sw(actFarG,  moving && focus==='typing');
