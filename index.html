@@ -61,7 +61,7 @@
 </head>
 <body>
 <header>
-  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v15</span>
+  <h1>Virtual Office</h1><span class="muted" title="ページのバージョン（更新が反映されたかの確認用）">v16</span>
   <span class="live"><span class="dot" id="liveDot"></span><span id="liveText">停止中</span></span>
   <span class="spacer"></span>
   <button id="silenceBtn" title="このタブの音と映像を共有すると、無音の配信の自動除外と、動画の動きに合わせた効果音が使えます">🔇 無音チェック・動き連動：オフ</button>
@@ -645,6 +645,7 @@ const amb = (()=>{
     pen:      {x:-0.8,  z:-2.0, lp:6000, hp:180},  // 左斜め前。机のドンという低音と、高いカリカリを少し抑える
     mouse:    {x: 0.45, z:-1.6, lp:12000},  // 向かいの席の人のマウス
   };
+  let sends = null;
   let ctx, master, hvacG, typeG, penG, mouseG, actG=null, actFarG=null, actPenG=null, actMouseG=null, outs=null, soloMute=false, bufs={}, loading=null;
   const R = (a,b)=>a+Math.random()*(b-a);
 
@@ -668,7 +669,7 @@ const amb = (()=>{
     const pn = c.createPanner(); pn.panningModel='HRTF'; pn.distanceModel='inverse'; pn.refDistance=1.2; pn.rolloffFactor=1;
     if (pn.positionX){ pn.positionX.value=seat.x; pn.positionY.value=-0.4; pn.positionZ.value=seat.z; } else pn.setPosition(seat.x,-0.4,seat.z);
     mono.connect(head); lp.connect(pn); pn.connect(bus);
-    const ws = c.createGain(); ws.gain.value = wet; lp.connect(ws); ws.connect(reverb);
+    const ws = c.createGain(); ws.gain.value = wet; lp.connect(ws); ws.connect(sends.get(bus));
     return mono;
   }
   // タイピング録音の再生位置（81.5〜82.1秒の大きな物音を含まない位置を選ぶ）
@@ -705,7 +706,12 @@ const amb = (()=>{
     entries.forEach(([k,b])=>bufs[k]=b);
   }
   function startLayers(){
-    const reverb = makeReverb(ctx); const wet = ctx.createGain(); wet.gain.value=0.25; reverb.connect(wet); wet.connect(master);
+    const rv = makeReverb(ctx); const wet = ctx.createGain(); wet.gain.value=0.25; rv.connect(wet); wet.connect(master);
+    // 響きへの送りも各スライダーの音量に従わせる（以前はここが素通りで、スライダー0でも響きだけ鳴っていた）
+    sends = new Map([[typeG, ctx.createGain()],[penG, ctx.createGain()],[mouseG, ctx.createGain()]]);
+    sends.forEach(g=>g.connect(rv));
+    const reverb = null;
+    apply();
     const nearSeat = seatOut(ctx, SEATS.typeNear, typeG, reverb, 0.08);
     actG = ctx.createGain(); actG.gain.value = 1; actG.connect(nearSeat);
     const outNear = actG;
@@ -759,6 +765,7 @@ const amb = (()=>{
     typeG.gain.value  = (S.amb.type/100)*k;
     penG.gain.value   = (S.amb.paper/100)*k;
     mouseG.gain.value = ((S.amb.mouse??30)/100)*k;
+    if (sends) sends.forEach((s,bus)=>{ s.gain.value = bus.gain.value; });
   }
   // 動画の動き（0〜1、null は連動なし）に合わせてタイピングの強さを変える
   function mouseBurst(t){
