@@ -377,13 +377,35 @@ function loadItem(s, item){
     playerVars:{autoplay:1, playsinline:1, rel:0, modestbranding:1},
     events:{
       onReady:()=>{ applyVolumes(); s.player.playVideo(); queueCheck(s); },
-      onStateChange:e=>{ if (e.data===0) fillSlot(s); },
-      onError:()=>{ if (s.item) sessionBad.add(s.item.videoId); toast('再生できない配信だったので次へ'); fillSlot(s); }
+      onStateChange:e=>{ if (e.data===1) recentErr.length=0; if (e.data===0) fillSlot(s); },
+      onError:e=>onPlayerError(s, e.data)
     }
   });
 }
+// 短時間に何本も続けて再生エラー＝配信ではなくYouTube側（「ボットでないことを確認」画面など）の問題。
+// そのまま次々に飛ばすと全候補を使い切って「見つからない」になるので、除外せずに止める
+const recentErr = []; let ytBlocked = false;
+function onPlayerError(s, code){
+  const now = Date.now();
+  if (s.item){ recentErr.push({videoId:s.item.videoId, at:now}); sessionBad.add(s.item.videoId); }
+  while (recentErr.length && now-recentErr[0].at > 30*1000) recentErr.shift();
+  if (recentErr.length >= 3){
+    recentErr.forEach(r=>sessionBad.delete(r.videoId));
+    recentErr.length = 0; ytBlocked = true;
+    slots.forEach(x=>showBlocked(x, code));
+    updateLive(); return;
+  }
+  toast('再生できない配信だったので次へ'); fillSlot(s);
+}
+function showBlocked(s, code){
+  showEmpty(s, `YouTubeが再生を止めています（エラー ${code}）。<br>`+
+    `<small>「ボットでないことを確認」が出る場合は、別タブで youtube.com を開いてログイン・確認を済ませてから押してください。</small><br>`+
+    `<button data-r="retry" style="margin-top:8px">もう一度試す</button>`);
+  s.el.querySelector('[data-r="retry"]').onclick = ()=>{ ytBlocked = false; slots.forEach(x=>fillSlot(x)); };
+}
 let candidates = [], lastErr = '';
 async function fillSlot(s){
+  if (ytBlocked){ showBlocked(s, '—'); return; }
   const playing = new Set(slots.filter(x=>x!==s && x.item).map(x=>x.item.videoId));
   const usable = c => !playing.has(c.videoId) && !sessionBad.has(c.videoId) && !sessionSkip.has(c.videoId);
   let pick;
